@@ -127,7 +127,7 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="w-full border-t border-border-outline-variant bg-surface-low py-8 z-10">
         <div className="max-w-7xl mx-auto px-6 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs text-text-secondary">
-          <p>© 2026 MindGuard. Built for the FAR AWAY 2026 Hackathon (Zuup / Zylon Labs).</p>
+          <p>© 2026 MindGuard. All rights reserved.</p>
           <div className="flex gap-4">
             <span className="hover:text-primary-accent transition-colors cursor-pointer">Privacy First</span>
             <span>•</span>
