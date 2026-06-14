@@ -782,7 +782,9 @@ export default function ExamPage() {
       })
     }).catch(err => console.error("Failed to save to database", err));
 
-    router.push("/report");
+    setTimeout(() => {
+      router.push("/");
+    }, 5000);
   };
 
   const handleSimulateDemoMode = () => {
@@ -833,7 +835,10 @@ export default function ExamPage() {
       })
     }).catch(err => console.error("Failed to save simulation to database", err));
 
-    router.push("/report");
+    setStage("finished");
+    setTimeout(() => {
+      router.push("/");
+    }, 5000);
   };
 
   // Progress UI helpers
@@ -939,35 +944,41 @@ export default function ExamPage() {
       </header>
 
       {/* SideNavBar (Left) */}
-      <aside className="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 z-40 flex flex-col p-4 bg-surface-container border-r border-border-outline-variant transition-ease hidden md:flex">
-        <div className="mb-6 p-2 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center text-white font-bold">ST</div>
-          <div>
-            <p className="text-xs font-bold text-on-surface">Candidate Portal</p>
-            <p className="text-[10px] text-text-secondary">Proctor Mode Enabled</p>
+      {stage !== "finished" && (
+        <aside className="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 z-40 flex flex-col p-4 bg-surface-container border-r border-border-outline-variant transition-ease hidden md:flex">
+          <div className="mb-6 p-2 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center text-white font-bold">ST</div>
+            <div>
+              <p className="text-xs font-bold text-on-surface">Candidate Portal</p>
+              <p className="text-[10px] text-text-secondary">Proctor Mode Enabled</p>
+            </div>
           </div>
-        </div>
-        <nav className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-3 p-3 bg-secondary-container text-on-secondary-container font-bold rounded-lg border border-border-outline-variant">
-            <span className="material-symbols-outlined">quiz</span>
-            <span className="text-xs">Exams Portal</span>
-          </div>
-        </nav>
-        
-        {/* Simple proctor feed placeholder to preserve sidebar space */}
-        {webcamAllowed && (
-          <div className="mt-auto p-3 bg-surface-lowest rounded-xl border border-border-outline-variant flex flex-col items-center justify-center h-28 text-center">
-            <span className="text-[10px] text-primary-accent font-bold uppercase tracking-wider mb-1 flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-              Live Biometrics
-            </span>
-            <p className="text-[9px] text-text-secondary font-light leading-snug">Proctor feed overlay active on desktop</p>
-          </div>
-        )}
-      </aside>
+          <nav className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-3 p-3 bg-secondary-container text-on-secondary-container font-bold rounded-lg border border-border-outline-variant">
+              <span className="material-symbols-outlined">quiz</span>
+              <span className="text-xs">Exams Portal</span>
+            </div>
+          </nav>
+          
+          {/* Simple proctor feed placeholder to preserve sidebar space */}
+          {webcamAllowed && (
+            <div className="mt-auto p-3 bg-surface-lowest rounded-xl border border-border-outline-variant flex flex-col items-center justify-center h-28 text-center">
+              <span className="text-[10px] text-primary-accent font-bold uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                Live Biometrics
+              </span>
+              <p className="text-[9px] text-text-secondary font-light leading-snug">Proctor feed overlay active on desktop</p>
+            </div>
+          )}
+        </aside>
+      )}
 
       {/* Main Content Area */}
-      <main className="md:ml-64 md:mr-80 pt-16 min-h-[calc(100vh-64px)] flex flex-col items-center relative transition-ease overflow-y-auto">
+      <main className={`pt-16 min-h-[calc(100vh-64px)] flex flex-col items-center relative transition-ease overflow-y-auto w-full ${
+        stage === "finished" 
+          ? "md:ml-0 md:mr-0" 
+          : "md:ml-64 md:mr-80"
+      }`}>
         {/* Wellness Guided Box Breathing Overlay */}
         {stage === "wellness-intervention" && (
           <div className="absolute inset-0 bg-background/95 backdrop-blur-md z-45 flex items-center justify-center p-6 rounded-3xl border border-emerald-500/20">
@@ -1039,7 +1050,23 @@ export default function ExamPage() {
             </div>
           )}
 
-          {stage === "pre-check" ? (
+          {stage === "finished" ? (
+            <div className="flex flex-col items-center justify-center text-center py-20 max-w-lg mx-auto">
+              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-8 text-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.15)] animate-pulse">
+                <span className="material-symbols-outlined text-[48px]">check_circle</span>
+              </div>
+              <h2 className="text-3xl font-extrabold text-on-surface mb-3 tracking-tight">Exam Submitted Successfully</h2>
+              <p className="text-sm text-text-secondary leading-relaxed font-light mb-8">
+                Your responses and biometrics telemetry have been successfully encrypted and uploaded. Redirecting you to the home page in a few seconds...
+              </p>
+              <button
+                onClick={() => router.push("/")}
+                className="px-8 py-3 bg-[#006194] hover:bg-[#00517c] text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-500/10 hover:shadow-blue-500/20 hover:-translate-y-0.5 transition-all duration-300 active:translate-y-0 active:scale-[0.98] cursor-pointer"
+              >
+                Go to Home Page
+              </button>
+            </div>
+          ) : stage === "pre-check" ? (
             <div className="flex flex-col justify-between h-full max-w-2xl mx-auto py-12 relative">
               <div>
                 <h2 className="text-2xl font-extrabold text-primary mb-2 flex items-center gap-2">
@@ -1277,7 +1304,7 @@ export default function ExamPage() {
       </main>
 
       {/* Right Sidebar - Proctor Telemetry (only shown during active exam) */}
-      {stage !== "pre-check" && (
+      {(stage === "active" || stage === "wellness-intervention") && (
       <aside className="fixed right-0 top-16 h-[calc(100vh-64px)] w-80 z-40 bg-surface border-l border-border-outline-variant flex flex-col transition-ease">
         <div className="p-4 border-b border-border-outline-variant bg-surface-low">
           <h3 className="text-xs font-bold text-on-surface uppercase tracking-wider mb-3">Live Proctoring</h3>
@@ -1379,7 +1406,7 @@ export default function ExamPage() {
           stage === "pre-check"
             ? "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-[62%] w-[320px] sm:w-[480px] aspect-video"
             : "fixed md:bottom-6 md:left-6 bottom-4 right-4 w-40 md:w-52 aspect-video"
-        } ${!webcamAllowed ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+        } ${(!webcamAllowed || stage === "finished") ? "opacity-0 pointer-events-none" : "opacity-100"}`}
       >
         <div className="relative w-full h-full bg-black rounded-lg overflow-hidden">
           <video
