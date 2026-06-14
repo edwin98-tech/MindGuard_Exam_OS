@@ -133,6 +133,20 @@ export function useFaceMesh(
     if (!isLoaded || !videoElementRef.current || !faceMeshRef.current) return;
 
     try {
+      // First, always grab a direct getUserMedia stream so the video element
+      // shows a live feed even before MediaPipe's Camera utility takes over.
+      let directStream: MediaStream | null = null;
+      try {
+        directStream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        const videoEl = videoElementRef.current;
+        if (videoEl) {
+          videoEl.srcObject = directStream;
+          await videoEl.play().catch(() => {});
+        }
+      } catch (mediaErr) {
+        console.warn("Direct getUserMedia failed, relying on MediaPipe Camera only:", mediaErr);
+      }
+
       const camera = new window.Camera(videoElementRef.current, {
         onFrame: async () => {
           const video = videoElementRef.current;
@@ -199,9 +213,18 @@ export function useFaceMesh(
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Clear and draw webcam frame in background
+    // Always draw webcam frame first so we never show a black screen
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+    try {
+      if (results.image) {
+        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+      } else if (videoElementRef.current && videoElementRef.current.readyState >= 2) {
+        // Fallback: draw directly from video element if results.image is missing
+        ctx.drawImage(videoElementRef.current, 0, 0, canvas.width, canvas.height);
+      }
+    } catch (drawErr) {
+      console.warn("Failed to draw image to canvas:", drawErr);
+    }
 
     const faceCount = results.multiFaceLandmarks ? results.multiFaceLandmarks.length : 0;
 

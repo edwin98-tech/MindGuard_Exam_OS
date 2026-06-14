@@ -1217,6 +1217,7 @@ export default function ExamPage() {
               ref={videoRef}
               className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
               playsInline
+              autoPlay
               muted
             />
             <canvas
