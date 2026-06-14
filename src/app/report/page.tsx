@@ -572,8 +572,29 @@ export default function ReportPage() {
         throw new Error(data.error || "Failed to generate report");
       }
     } catch (err: any) {
-      console.error(err);
-      alert("Error compiling AI Report: " + err.message);
+      console.error("API failed, falling back to client-side simulation:", err);
+      // Hard fallback for a bulletproof demo experience
+      const mockReport = `# MINDGUARD COGNITIVE WELLNESS & INTEGRITY REPORT (OFFLINE DEMO)
+
+## 1. Executive Summary
+The exam session was monitored successfully. While some minor technical deviations occurred, the behavior patterns strongly correlate with testing anxiety and physical restlessness rather than malicious intent.
+
+## 2. Cognitive Wellness & Fatigue Analysis
+The telemetry indicates moderate to high ocular fatigue. Blink rate patterns and a depressed Average Eye Aspect Ratio reflect physical tiredness and digital eye strain (DES).
+
+## 3. Exam Integrity Evaluation
+- **Focus Deviations**: Brief off-screen gazes were detected, consistent with natural cognitive redirection.
+- **Environment**: No significant security anomalies flagged. The student remained the primary entity in frame.
+
+## 4. Institutional Recommendations
+- **Avoid Punitive Grading**: Do not invalidate the exam based on minor telemetry alerts.
+- **Implement Rest Breaks**: The student showed clear signs of digital eye strain. Recommend 1-minute visual rest breaks for exams exceeding 60 minutes.
+
+## 5. Personalized Student Wellness Feedback
+Hey! You did an amazing job finishing your exam. We noticed your eyes were getting a bit tired towards the end. Remember to practice the **20-20-20 rule**: every 20 minutes, look at something 20 feet away for at least 20 seconds. Keep breathing, stay hydrated, and take some time to stretch!`;
+      
+      setAiReport(mockReport);
+      setIsSimulated(true);
     } finally {
       setLoadingAI(false);
     }
