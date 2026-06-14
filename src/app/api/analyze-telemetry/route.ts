@@ -51,42 +51,49 @@ Provide a detailed markdown report structured EXACTLY as follows:
 [Provide a warm, encouraging message directly to the student with practical, science-backed tips for exam anxiety, eye strain relief, and mental health.]
 `;
 
-    // Try sending request to Gemini 2.5 Flash API
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: prompt,
-                },
-              ],
-            },
-          ],
-        }),
+    // Try sending request to Gemini 2.5 Flash API with local fallback safety net
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: prompt,
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.warn(`Gemini API request failed (status ${response.status}). Falling back to local wellness engine. Details:`, errorText);
+        const mockAnalysis = generateMockAnalysis(metrics);
+        return NextResponse.json({ success: true, report: mockAnalysis, simulated: true, warning: `Gemini API returned status ${response.status}` });
       }
-    );
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("Gemini API request failed:", errorText);
-      throw new Error(`Gemini API returned status ${response.status}`);
+      const data = await response.json();
+      const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+      if (!generatedText) {
+        throw new Error("Invalid response format received from Gemini API.");
+      }
+
+      return NextResponse.json({ success: true, report: generatedText, simulated: false });
+    } catch (apiErr: any) {
+      console.warn("Gemini API call failed with exception. Falling back to local wellness engine. Error:", apiErr);
+      const mockAnalysis = generateMockAnalysis(metrics);
+      return NextResponse.json({ success: true, report: mockAnalysis, simulated: true, warning: apiErr.message });
     }
-
-    const data = await response.json();
-    const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-    if (!generatedText) {
-      throw new Error("Invalid response format received from Gemini API.");
-    }
-
-    return NextResponse.json({ success: true, report: generatedText, simulated: false });
   } catch (err: any) {
     console.error("Error in analyze-telemetry endpoint:", err);
     return NextResponse.json(

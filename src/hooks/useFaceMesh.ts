@@ -111,8 +111,16 @@ export function useFaceMesh(
     try {
       const camera = new window.Camera(videoElementRef.current, {
         onFrame: async () => {
-          if (videoElementRef.current && faceMeshRef.current) {
-            await faceMeshRef.current.send({ image: videoElementRef.current });
+          const video = videoElementRef.current;
+          if (video && faceMeshRef.current) {
+            // Check readyState and dimensions to prevent WebAssembly crash/abort
+            if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+              try {
+                await faceMeshRef.current.send({ image: video });
+              } catch (err) {
+                console.warn("MediaPipe faceMesh.send failed:", err);
+              }
+            }
           }
         },
         width: 640,

@@ -278,6 +278,20 @@ export default function ReportPage() {
         }),
       });
 
+      if (!response.ok) {
+        let errorMsg = `HTTP Error ${response.status}`;
+        try {
+          const errData = await response.json();
+          errorMsg = errData.error || errorMsg;
+        } catch {
+          try {
+            const text = await response.text();
+            if (text && text.length < 150) errorMsg = text;
+          } catch {}
+        }
+        throw new Error(errorMsg);
+      }
+
       const data = await response.json();
       if (data.success) {
         setAiReport(data.report);
