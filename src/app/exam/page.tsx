@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { 
   Shield, Camera, Mic, Play, ChevronLeft, ChevronRight, CheckCircle2, 
@@ -156,6 +156,8 @@ export default function ExamPage() {
   // Dynamic values helper references to read in loop
   const earHistoryRef = useRef<number[]>([]);
   const blinkCooldownRef = useRef(false);
+  // Throttle display state updates: only push to React state every 3 frames (~10fps)
+  const frameThrottleRef = useRef(0);
 
   // Helper to capture a compressed base64 frame thumbnail
   const captureBase64Snapshot = (): string | null => {
@@ -251,9 +253,15 @@ export default function ExamPage() {
 
     if (stageRef.current !== "active" && stageRef.current !== "wellness-intervention") return;
 
-    setCurrentEAR(result.earAvg);
-    setCurrentGaze(result.gazeAvg);
-    setFaceCount(result.faceCount);
+    // Throttle display-only state updates to every 3 frames to prevent re-render flooding
+    frameThrottleRef.current += 1;
+    const shouldUpdateDisplay = frameThrottleRef.current % 3 === 0;
+
+    if (shouldUpdateDisplay) {
+      setCurrentEAR(result.earAvg);
+      setCurrentGaze(result.gazeAvg);
+      setFaceCount(result.faceCount);
+    }
 
     // Track posture slouching
     setIsSlouching(prev => {
@@ -296,10 +304,11 @@ export default function ExamPage() {
     // EAR history accumulation
     if (result.earAvg > 0) {
       earHistoryRef.current.push(result.earAvg);
-      if (earHistoryRef.current.length > 300) earHistoryRef.current.shift(); // keep last 10s at 30fps
-      
-      const sum = earHistoryRef.current.reduce((a, b) => a + b, 0);
-      setAvgEAR(sum / earHistoryRef.current.length);
+      if (earHistoryRef.current.length > 300) earHistoryRef.current.shift();
+      if (shouldUpdateDisplay) {
+        const sum = earHistoryRef.current.reduce((a, b) => a + b, 0);
+        setAvgEAR(sum / earHistoryRef.current.length);
+      }
     }
 
     // Blink detection
