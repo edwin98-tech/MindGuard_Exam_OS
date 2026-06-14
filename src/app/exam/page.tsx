@@ -566,19 +566,57 @@ export default function ExamPage() {
 
   // Run Calibration pre-check loop
   const handleStartCalibration = async () => {
-    if (!isLoaded) return;
     setIsCalibrating(true);
     setCalibrationProgress(5);
-    setCalibrationInstruction("Connecting to webcam feed...");
+    setCalibrationInstruction("Requesting webcam access...");
 
+    // Step 1: Request camera permission IMMEDIATELY — do not wait for MediaPipe
     try {
-      await startTracking();
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+      const videoEl = videoRef.current;
+      if (videoEl) {
+        videoEl.srcObject = stream;
+        await videoEl.play().catch(() => {});
+      }
       setWebcamAllowed(true);
       setCalibrationProgress(10);
       setCalibrationInstruction("Webcam connected. Position your face in the center of the targeting ring...");
     } catch (err) {
       setIsCalibrating(false);
-      setCalibrationInstruction("Calibration failed. Check permissions.");
+      setCalibrationInstruction("Camera permission denied. Please allow webcam access and try again.");
+      return;
+    }
+
+    // Step 2: If MediaPipe is already loaded, start face tracking immediately
+    if (isLoaded) {
+      try {
+        await startTracking();
+      } catch (err) {
+        console.warn("startTracking failed, live feed is still showing:", err);
+      }
+    } else {
+      // MediaPipe is still loading — it will be ready shortly
+      // The video feed is already live. We poll until isLoaded becomes true.
+      setCalibrationInstruction("Loading AI face detection modules... (webcam is live)");
+      const waitForMediaPipe = async () => {
+        let attempts = 0;
+        const maxAttempts = 30; // wait up to ~15 seconds
+        while (attempts < maxAttempts) {
+          await new Promise(r => setTimeout(r, 500));
+          attempts++;
+          if (window.FaceMesh && window.Camera) {
+            try {
+              await startTracking();
+              setCalibrationInstruction("AI face detection active. Position your face in the ring...");
+            } catch (err) {
+              console.warn("startTracking after wait failed:", err);
+            }
+            return;
+          }
+        }
+        setCalibrationInstruction("AI modules unavailable — using webcam-only mode.");
+      };
+      waitForMediaPipe();
     }
   };
 
@@ -962,7 +1000,7 @@ export default function ExamPage() {
                     </button>
                     <button
                       onClick={handleStartCalibration}
-                      disabled={isCalibrating || !isLoaded}
+                      disabled={isCalibrating}
                       className="px-6 py-3 bg-primary-accent text-white font-bold text-xs hover:bg-primary disabled:opacity-50 transition-all flex items-center gap-2 cursor-pointer"
                     >
                       {isCalibrating ? (
