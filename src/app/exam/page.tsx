@@ -141,6 +141,7 @@ export default function ExamPage() {
   // New proctoring checks states
   const [isSlouching, setIsSlouching] = useState(false);
   const [isCameraFrozen, setIsCameraFrozen] = useState(false);
+  const [isFullscreenViolation, setIsFullscreenViolation] = useState(false);
 
   const isStressAdapted = fatigueScore >= 50 || stressLevel === "High";
 
@@ -365,20 +366,34 @@ export default function ExamPage() {
     setBreathCyclesCompleted(0);
   };
 
-  // TabShield security listeners (Visibility, DevTools, resizing)
+  // TabShield security listeners (Visibility, DevTools, resizing, fullscreen, blur)
   useEffect(() => {
+    const lastFocusLossTimeRef = { current: 0 };
+    const handleFocusLoss = (reason: string) => {
+      if (stageRef.current !== "active" && stageRef.current !== "wellness-intervention") return;
+      const now = Date.now();
+      if (now - lastFocusLossTimeRef.current < 1000) return; // ignore duplicates within 1 second
+      lastFocusLossTimeRef.current = now;
+
+      setTabSwitches(prev => {
+        const nextCount = prev + 1;
+        addTelemetryLog("tab_switch", `${reason} (Violation count: ${nextCount})`);
+        return nextCount;
+      });
+    };
+
     const handleVisibilityChange = () => {
-      if (document.hidden && stageRef.current === "active") {
-        setTabSwitches(prev => {
-          const nextCount = prev + 1;
-          addTelemetryLog("tab_switch", `Browser tab switched or window minimized (Violation count: ${nextCount})`);
-          return nextCount;
-        });
+      if (document.hidden) {
+        handleFocusLoss("Browser tab switched or minimized");
       }
     };
 
+    const handleWindowBlur = () => {
+      handleFocusLoss("Exam window lost focus");
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (stageRef.current !== "active") return;
+      if (stageRef.current !== "active" && stageRef.current !== "wellness-intervention") return;
       
       const isDevToolsKey = 
         e.key === "F12" || 
@@ -392,20 +407,48 @@ export default function ExamPage() {
     };
 
     const handleResize = () => {
-      if (stageRef.current !== "active") return;
+      if (stageRef.current !== "active" && stageRef.current !== "wellness-intervention") return;
       addTelemetryLog("security_alert", `Browser window size changed to ${window.innerWidth}x${window.innerHeight}`);
     };
 
+    const handleFullscreenChange = () => {
+      const isExamActive = stageRef.current === "active" || stageRef.current === "wellness-intervention";
+      if (isExamActive) {
+        if (document.fullscreenElement) {
+          setIsFullscreenViolation(false);
+        } else {
+          setIsFullscreenViolation(true);
+          handleFocusLoss("Fullscreen mode exited");
+        }
+      }
+    };
+
     document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("resize", handleResize);
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("resize", handleResize);
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
   }, []);
+
+  const handleReEnterFullscreen = () => {
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen()
+        .then(() => {
+          setIsFullscreenViolation(false);
+        })
+        .catch((err) => {
+          console.warn("Failed to re-enter fullscreen:", err);
+        });
+    }
+  };
 
   // Setup proctor real-time messaging listeners (Supabase Broadcast + localStorage sync)
   useEffect(() => {
@@ -678,6 +721,17 @@ export default function ExamPage() {
     setStage("active");
     addTelemetryLog("exam_start", "Student commenced the exam session.");
     startAudioAnalysis();
+
+    // Request fullscreen
+    if (document.documentElement.requestFullscreen) {
+      document.documentElement.requestFullscreen()
+        .then(() => {
+          setIsFullscreenViolation(false);
+        })
+        .catch((err) => {
+          console.warn("Failed to enter fullscreen:", err);
+        });
+    }
   };
 
   // End and submit exam
@@ -689,6 +743,15 @@ export default function ExamPage() {
     }
 
     setStage("finished");
+
+    // Exit fullscreen
+    if (document.fullscreenElement) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch((err) => {
+          console.warn("Failed to exit fullscreen:", err);
+        });
+      }
+    }
     
     // Save telemetry logs and final parameters to LocalStorage
     const finalMetrics = {
@@ -784,6 +847,23 @@ export default function ExamPage() {
     <div className={`min-h-screen bg-background text-on-surface flex flex-col relative overflow-hidden transition-all duration-700 ${
       stage !== "pre-check" && isStressAdapted ? "stress-adapted" : ""
     }`}>
+      {isFullscreenViolation && (
+        <div className="fixed inset-0 z-[9999] bg-background/90 backdrop-blur-lg flex flex-col items-center justify-center text-center p-6">
+          <div className="p-5 bg-rose-500/10 border border-rose-500/20 rounded-full flex items-center justify-center mb-6 text-rose-500 shadow-[0_0_30px_rgba(239,68,68,0.2)] animate-pulse">
+            <span className="material-symbols-outlined text-[40px]">fullscreen_exit</span>
+          </div>
+          <h2 className="text-2xl font-extrabold text-on-surface mb-2 tracking-tight">Fullscreen Mode Required</h2>
+          <p className="text-sm text-text-secondary max-w-sm mb-8 leading-relaxed font-light">
+            To maintain exam integrity, you must remain in fullscreen mode. Exiting fullscreen has been logged as a telemetry violation.
+          </p>
+          <button
+            onClick={handleReEnterFullscreen}
+            className="px-6 py-3 bg-[#006194] hover:bg-[#00517c] text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-500/10 hover:shadow-blue-500/20 hover:-translate-y-0.5 transition-all duration-300 active:translate-y-0 active:scale-[0.98] cursor-pointer"
+          >
+            Return to Fullscreen
+          </button>
+        </div>
+      )}
       {/* Link Material symbols */}
       <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
 
