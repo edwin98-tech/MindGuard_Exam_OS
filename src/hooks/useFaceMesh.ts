@@ -362,7 +362,8 @@ export function useFaceMesh(
 
       const noseX = noseTip.x;
       const noseY = noseTip.y;
-      const isFaceCentered = faceCount === 1 && noseX >= 0.38 && noseX <= 0.62 && noseY >= 0.38 && noseY <= 0.62;
+      // Wide centering zone — just check face is roughly in frame, not pixel-perfect
+      const isFaceCentered = faceCount === 1 && noseX >= 0.20 && noseX <= 0.80 && noseY >= 0.20 && noseY <= 0.80;
 
       trackingData = {
         earLeft,

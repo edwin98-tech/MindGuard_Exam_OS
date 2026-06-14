@@ -204,24 +204,22 @@ export default function ExamPage() {
 
       if (calibrationStepRef.current === 1) {
         setCalibrationInstruction("Center your face inside the targeting ring...");
-        if (result.faceCount === 1 && result.isFaceCentered) {
+        if (result.faceCount >= 1) {
           step1CenterFramesRef.current += 1;
-          setCalibrationProgress(Math.min(10 + Math.round((step1CenterFramesRef.current / 30) * 25), 35));
-          if (step1CenterFramesRef.current >= 30) { // ~1 second
+          setCalibrationProgress(Math.min(10 + Math.round((step1CenterFramesRef.current / 10) * 25), 35));
+          if (step1CenterFramesRef.current >= 10) { // ~0.3 seconds at 30fps
             setStep1Passed(true);
             calibrationStepRef.current = 2;
             setCalibrationStep(2);
             setCalibrationInstruction("Blink pattern calibration: Keep looking at the screen...");
           }
-        } else {
-          if (step1CenterFramesRef.current > 0) step1CenterFramesRef.current -= 1;
         }
       } else if (calibrationStepRef.current === 2) {
-        if (result.faceCount === 1) {
+        if (result.faceCount >= 1) {
           step2EarValuesRef.current.push(result.earAvg);
-          const progressPercent = Math.min(35 + Math.round((step2EarValuesRef.current.length / 60) * 35), 70);
+          const progressPercent = Math.min(35 + Math.round((step2EarValuesRef.current.length / 20) * 35), 70);
           setCalibrationProgress(progressPercent);
-          if (step2EarValuesRef.current.length >= 60) { // ~2 seconds
+          if (step2EarValuesRef.current.length >= 20) { // ~0.6 seconds
             const averageEAR = step2EarValuesRef.current.reduce((a, b) => a + b, 0) / step2EarValuesRef.current.length;
             setCalibratedBaselineEAR(averageEAR);
             setStep2Passed(true);
@@ -231,11 +229,11 @@ export default function ExamPage() {
           }
         }
       } else if (calibrationStepRef.current === 3) {
-        if (result.faceCount === 1 && result.noseY !== undefined) {
+        if (result.faceCount >= 1 && result.noseY !== undefined) {
           step3PostureValuesRef.current.push(result.noseY);
-          const progressPercent = Math.min(70 + Math.round((step3PostureValuesRef.current.length / 30) * 30), 100);
+          const progressPercent = Math.min(70 + Math.round((step3PostureValuesRef.current.length / 10) * 30), 100);
           setCalibrationProgress(progressPercent);
-          if (step3PostureValuesRef.current.length >= 30) { // ~1 second
+          if (step3PostureValuesRef.current.length >= 10) { // ~0.3 seconds
             const averagePosture = step3PostureValuesRef.current.reduce((a, b) => a + b, 0) / step3PostureValuesRef.current.length;
             setCalibratedBaselinePosture(averagePosture);
             setStep3Passed(true);
@@ -243,11 +241,13 @@ export default function ExamPage() {
             setCalibrationStep(4);
             setIsCalibrating(false);
             setCalibrationInstruction("Calibration completed! You are ready to start the exam.");
+            setCalibrationProgress(100);
           }
         }
       }
       return;
     }
+
 
     if (stageRef.current !== "active" && stageRef.current !== "wellness-intervention") return;
 
