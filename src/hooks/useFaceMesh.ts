@@ -39,6 +39,11 @@ export function useFaceMesh(
   canvasElementRef: React.RefObject<HTMLCanvasElement | null>,
   onTrackingUpdate: (result: FaceMeshTrackingResult) => void
 ) {
+  const onTrackingUpdateRef = useRef(onTrackingUpdate);
+  useEffect(() => {
+    onTrackingUpdateRef.current = onTrackingUpdate;
+  }, [onTrackingUpdate]);
+
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cameraRef = useRef<any>(null);
@@ -387,7 +392,7 @@ export function useFaceMesh(
       drawCustomFaceMesh(ctx, landmarks);
     }
 
-    onTrackingUpdate(trackingData);
+    onTrackingUpdateRef.current(trackingData);
   };
 
   // Draws a premium glowing cyberpunk face mesh wireframe

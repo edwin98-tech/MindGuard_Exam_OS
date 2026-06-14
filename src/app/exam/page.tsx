@@ -159,6 +159,12 @@ export default function ExamPage() {
   // Throttle display state updates: only push to React state every 3 frames (~10fps)
   const frameThrottleRef = useRef(0);
 
+  // Previous status refs to prevent state re-render loop
+  const isSlouchingRef = useRef(false);
+  const isCameraFrozenRef = useRef(false);
+  const multipleFacesFramesRef = useRef(0);
+  const offScreenGazeFramesRef = useRef(0);
+
   // Helper to capture a compressed base64 frame thumbnail
   const captureBase64Snapshot = (): string | null => {
     if (!canvasRef.current) return null;
@@ -264,41 +270,47 @@ export default function ExamPage() {
     }
 
     // Track posture slouching
-    setIsSlouching(prev => {
-      if (result.isSlouching && !prev) {
+    if (result.isSlouching !== isSlouchingRef.current) {
+      isSlouchingRef.current = result.isSlouching;
+      if (result.isSlouching) {
         addTelemetryLog("posture_deviation", "Poor posture/slouching detected. Please sit up straight.");
       }
-      return result.isSlouching;
-    });
+      setIsSlouching(result.isSlouching);
+    }
 
     // Track camera freezing
-    setIsCameraFrozen(prev => {
-      if (result.isFrozen && !prev) {
+    if (result.isFrozen !== isCameraFrozenRef.current) {
+      isCameraFrozenRef.current = result.isFrozen;
+      if (result.isFrozen) {
         addTelemetryLog("camera_freeze", "Warning: Video feed has frozen or is static.");
       }
-      return result.isFrozen;
-    });
+      setIsCameraFrozen(result.isFrozen);
+    }
 
     // Track multiple faces
     if (result.faceCount > 1) {
-      setMultipleFacesSeconds(prev => {
-        const nextVal = prev + 1;
-        if (nextVal % 5 === 0) {
-          addTelemetryLog("security_alert", `Multiple faces detected in frame (${result.faceCount} faces)`);
-        }
-        return nextVal;
-      });
+      multipleFacesFramesRef.current += 1;
+      // Log telemetry every 5 seconds (150 frames) instead of every 5 frames to avoid log spamming
+      if (multipleFacesFramesRef.current % 150 === 0) {
+        addTelemetryLog("security_alert", `Multiple faces detected in frame (${result.faceCount} faces)`);
+      }
+      // Update state every 30 frames (1 second)
+      if (multipleFacesFramesRef.current % 30 === 0) {
+        setMultipleFacesSeconds(Math.floor(multipleFacesFramesRef.current / 30));
+      }
     }
 
     // Gaze tracking off-screen counting
-    if (result.offScreenGazeCount > 20) { // ~20 frames of off-screen gaze
-      setOffScreenGazeSeconds(prev => {
-        const nextVal = prev + 1;
-        if (nextVal % 5 === 0) {
-          addTelemetryLog("gaze_deviation", `Off-screen gaze shift logged (${(result.gazeAvg).toFixed(2)})`);
-        }
-        return nextVal;
-      });
+    if (result.offScreenGazeCount > 20) {
+      offScreenGazeFramesRef.current += 1;
+      // Log telemetry every 5 seconds (150 frames) instead of every 5 frames
+      if (offScreenGazeFramesRef.current % 150 === 0) {
+        addTelemetryLog("gaze_deviation", `Off-screen gaze shift logged (${(result.gazeAvg).toFixed(2)})`);
+      }
+      // Update state every 30 frames (1 second)
+      if (offScreenGazeFramesRef.current % 30 === 0) {
+        setOffScreenGazeSeconds(Math.floor(offScreenGazeFramesRef.current / 30));
+      }
     }
 
     // EAR history accumulation
@@ -315,23 +327,22 @@ export default function ExamPage() {
     if (result.isBlinking) {
       if (!blinkCooldownRef.current) {
         blinkCooldownRef.current = true;
-        setBlinkCount(prev => {
-          const nextBlink = prev + 1;
-          
-          // Fatigue detection logic: blink burst
-          if (result.eyeClosedDurationMs > 1500) {
-            addTelemetryLog("fatigue_alert", `Prolonged eyelid closure detected: ${(result.eyeClosedDurationMs/1000).toFixed(1)}s`);
-            setFatigueScore(f => {
-              const newFatigue = Math.min(f + 25, 100);
-              if (newFatigue >= 70) {
-                // Trigger box breathing automatically if fatigue spikes
+        setBlinkCount(prev => prev + 1);
+        
+        // Fatigue detection logic: blink burst
+        if (result.eyeClosedDurationMs > 1500) {
+          addTelemetryLog("fatigue_alert", `Prolonged eyelid closure detected: ${(result.eyeClosedDurationMs/1000).toFixed(1)}s`);
+          setFatigueScore(f => {
+            const newFatigue = Math.min(f + 25, 100);
+            if (newFatigue >= 70) {
+              // Trigger box breathing automatically if fatigue spikes
+              setTimeout(() => {
                 triggerWellnessIntervention("Severe drowsiness & ocular strain detected. Let's take a 16-second box breathing break.");
-              }
-              return newFatigue;
-            });
-          }
-          return nextBlink;
-        });
+              }, 0);
+            }
+            return newFatigue;
+          });
+        }
       }
     } else {
       blinkCooldownRef.current = false;
@@ -1199,72 +1210,64 @@ export default function ExamPage() {
         </div>
         
         <div className="flex-1 overflow-y-auto p-4 space-y-6">
-          {stage === "pre-check" ? (
-            <div className="flex flex-col items-center justify-center text-center p-4 min-h-[200px]">
-              <span className="material-symbols-outlined text-[32px] text-text-secondary/40 mb-2">shield</span>
-              <p className="text-xs font-bold text-on-surface uppercase tracking-wider mb-1">Calibration Mode</p>
-              <p className="text-[10px] text-text-secondary font-light">Proctoring telemetry will initialize once the exam begins.</p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <div>
-                <h4 className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">Cognitive Telemetry</h4>
-                <div className="space-y-4">
-                  {/* Gaze Stability */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-text-secondary">Gaze Stability</span>
-                      <span className={`font-bold ${currentGaze < 0.35 || currentGaze > 0.65 ? "text-amber-500" : "text-primary-accent"}`}>
-                        {currentGaze < 0.35 || currentGaze > 0.65 ? "Gaze Shifted" : "Optimal"}
-                      </span>
-                    </div>
-                    <div className="telemetry-bar">
-                      <div className="telemetry-progress bg-primary-accent" style={{ width: `${Math.round(currentGaze * 100)}%` }}></div>
-                    </div>
+          <div className="space-y-6">
+            <div>
+              <h4 className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">Cognitive Telemetry</h4>
+              <div className="space-y-4">
+                {/* Gaze Stability */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-text-secondary">Gaze Stability</span>
+                    <span className={`font-bold ${currentGaze < 0.35 || currentGaze > 0.65 ? "text-amber-500" : "text-primary-accent"}`}>
+                      {currentGaze < 0.35 || currentGaze > 0.65 ? "Gaze Shifted" : "Optimal"}
+                    </span>
                   </div>
-
-                  {/* EAR */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-text-secondary">Engagement (EAR)</span>
-                      <span className={`font-bold ${currentEAR < 0.18 ? "text-red-500" : "text-green-600"}`}>
-                        {currentEAR < 0.18 ? "Closed" : "Optimal"}
-                      </span>
-                    </div>
-                    <div className="telemetry-bar">
-                      <div className="telemetry-progress bg-green-500" style={{ width: `${Math.min((currentEAR / 0.3) * 100, 100)}%` }}></div>
-                    </div>
+                  <div className="telemetry-bar">
+                    <div className="telemetry-progress bg-primary-accent" style={{ width: `${Math.round(currentGaze * 100)}%` }}></div>
                   </div>
+                </div>
 
-                  {/* Stress index */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-text-secondary">Stress Index</span>
-                      <span className={`font-bold ${stressLevel === "High" ? "text-red-500" : "text-tertiary"}`}>{stressLevel}</span>
-                    </div>
-                    <div className="telemetry-bar">
-                      <div className="telemetry-progress bg-tertiary-container" style={{ width: `${Math.round(riskScore * 100)}%` }}></div>
-                    </div>
+                {/* EAR */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-text-secondary">Engagement (EAR)</span>
+                    <span className={`font-bold ${currentEAR < 0.18 ? "text-red-500" : "text-green-600"}`}>
+                      {currentEAR < 0.18 ? "Closed" : "Optimal"}
+                    </span>
+                  </div>
+                  <div className="telemetry-bar">
+                    <div className="telemetry-progress bg-green-500" style={{ width: `${Math.min((currentEAR / 0.3) * 100, 100)}%` }}></div>
+                  </div>
+                </div>
+
+                {/* Stress index */}
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-xs">
+                    <span className="text-text-secondary">Stress Index</span>
+                    <span className={`font-bold ${stressLevel === "High" ? "text-red-500" : "text-tertiary"}`}>{stressLevel}</span>
+                  </div>
+                  <div className="telemetry-bar">
+                    <div className="telemetry-progress bg-tertiary-container" style={{ width: `${Math.round(riskScore * 100)}%` }}></div>
                   </div>
                 </div>
               </div>
+            </div>
 
-              {/* Security Indicators */}
-              <div className="p-3 bg-surface-container rounded-lg border border-border-outline-variant space-y-2">
-                <p className="text-[10px] font-bold text-on-surface uppercase tracking-wider">Environment Security</p>
-                <div className="flex justify-between items-center text-xs text-on-surface-variant">
-                  <span className="flex items-center gap-1">
-                    <span className="material-symbols-outlined text-[16px] text-green-500">mic</span>
-                    Audio Clean
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="material-symbols-outlined text-[16px] text-green-500">visibility</span>
-                    Single Face
-                  </span>
-                </div>
+            {/* Security Indicators */}
+            <div className="p-3 bg-surface-container rounded-lg border border-border-outline-variant space-y-2">
+              <p className="text-[10px] font-bold text-on-surface uppercase tracking-wider">Environment Security</p>
+              <div className="flex justify-between items-center text-xs text-on-surface-variant">
+                <span className="flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[16px] text-green-500">mic</span>
+                  Audio Clean
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[16px] text-green-500">visibility</span>
+                  Single Face
+                </span>
               </div>
             </div>
-          )}
+          </div>
         </div>
 
         {/* Buttons */}
