@@ -794,12 +794,14 @@ export default function ExamPage() {
               <span className="font-mono text-sm font-bold text-primary timer-glow" id="exam-timer">{formatTime(examTimeRemaining)}</span>
             </div>
           )}
-          <button 
-            onClick={handleSubmitExam} 
-            className="px-4 py-2 bg-primary-accent hover:bg-primary text-white text-xs font-bold uppercase tracking-wider transition-ease cursor-pointer"
-          >
-            Submit Exam
-          </button>
+          {stage === "active" && (
+            <button 
+              onClick={handleSubmitExam} 
+              className="px-4 py-2 bg-primary-accent hover:bg-primary text-white text-xs font-bold uppercase tracking-wider transition-ease cursor-pointer"
+            >
+              Submit Exam
+            </button>
+          )}
         </div>
       </header>
 
@@ -1243,61 +1245,62 @@ export default function ExamPage() {
         </div>
       </aside>
 
-      {/* Live Proctoring Webcam Feed Overlay (Option 3 & 5) */}
-      {webcamAllowed && (
-        <div className={`transition-all duration-500 border border-border-outline-variant bg-surface-lowest p-2 rounded-xl shadow-lg z-50 ${
+      {/* Live Proctoring Webcam Feed — always mounted so videoRef is never null */}
+      <div
+        className={`transition-all duration-500 border border-border-outline-variant bg-surface-lowest p-2 rounded-xl shadow-lg z-50 ${
           stage === "pre-check"
             ? "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-[62%] w-[320px] sm:w-[480px] aspect-video"
             : "fixed md:bottom-6 md:left-6 bottom-4 right-4 w-40 md:w-52 aspect-video"
-        }`}>
-          <div className="relative w-full h-full bg-black rounded-lg overflow-hidden">
-            <video
-              ref={videoRef}
-              className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-              playsInline
-              autoPlay
-              muted
-            />
-            <canvas
-              ref={canvasRef}
-              width="640"
-              height="480"
-              className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-            />
-            
-            {/* Circular targeting ring overlay in pre-check stage */}
-            {stage === "pre-check" && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                {/* Outer spinning ring */}
-                <div className={`w-36 h-36 sm:w-52 sm:h-52 rounded-full border-4 border-dashed transition-colors duration-300 ${
-                  step1Passed ? "border-emerald-500/60" : "border-primary-accent/40"
-                } animate-[spin_60s_linear_infinite]`}></div>
-                
-                {/* Inner solid ring */}
-                <div className={`absolute w-32 h-32 sm:w-48 sm:h-48 rounded-full border-2 transition-colors duration-300 ${
-                  step1Passed ? "border-emerald-500" : "border-primary-accent/80"
-                }`}></div>
-                
-                {/* Guide silhouette */}
-                <svg className={`absolute w-20 h-20 sm:w-28 sm:h-28 transition-colors duration-300 ${
-                  step1Passed ? "text-emerald-500/20" : "text-primary-accent/30"
-                }`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
-                  <path d="M12 2a5 5 0 0 0-5 5v3a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z" />
-                  <path d="M4 19a8 8 0 0 1 16 0" />
-                </svg>
-                
-                {/* Status banner on feed */}
-                <div className="absolute bottom-2 px-3 py-1 bg-black/60 backdrop-blur-sm rounded-full text-[9px] font-bold text-white uppercase tracking-wider font-mono">
-                  {calibrationStep === 1 && "Align Face"}
-                  {calibrationStep === 2 && "Recording Eyes"}
-                  {calibrationStep === 3 && "Hold Still (Posture)"}
-                  {calibrationStep === 4 && "Completed!"}
-                </div>
+        } ${!webcamAllowed ? "opacity-0 pointer-events-none" : "opacity-100"}`}
+      >
+        <div className="relative w-full h-full bg-black rounded-lg overflow-hidden">
+          <video
+            ref={videoRef}
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+            playsInline
+            autoPlay
+            muted
+          />
+          <canvas
+            ref={canvasRef}
+            width="640"
+            height="480"
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+          />
+
+          {/* Circular targeting ring overlay in pre-check stage */}
+          {stage === "pre-check" && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              {/* Outer spinning ring */}
+              <div className={`w-36 h-36 sm:w-52 sm:h-52 rounded-full border-4 border-dashed transition-colors duration-300 ${
+                step1Passed ? "border-emerald-500/60" : "border-primary-accent/40"
+              } animate-[spin_60s_linear_infinite]`}></div>
+
+              {/* Inner solid ring */}
+              <div className={`absolute w-32 h-32 sm:w-48 sm:h-48 rounded-full border-2 transition-colors duration-300 ${
+                step1Passed ? "border-emerald-500" : "border-primary-accent/80"
+              }`}></div>
+
+              {/* Guide silhouette */}
+              <svg className={`absolute w-20 h-20 sm:w-28 sm:h-28 transition-colors duration-300 ${
+                step1Passed ? "text-emerald-500/20" : "text-primary-accent/30"
+              }`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
+                <path d="M12 2a5 5 0 0 0-5 5v3a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z" />
+                <path d="M4 19a8 8 0 0 1 16 0" />
+              </svg>
+
+              {/* Status banner on feed */}
+              <div className="absolute bottom-2 px-3 py-1 bg-black/60 backdrop-blur-sm rounded-full text-[9px] font-bold text-white uppercase tracking-wider font-mono">
+                {calibrationStep === 1 && "Align Face"}
+                {calibrationStep === 2 && "Recording Eyes"}
+                {calibrationStep === 3 && "Hold Still (Posture)"}
+                {calibrationStep === 4 && "Completed!"}
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
+
