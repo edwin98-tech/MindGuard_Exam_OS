@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { 
   Shield, Camera, Mic, Play, ChevronLeft, ChevronRight, CheckCircle2, 
@@ -9,6 +8,7 @@ import {
 } from "lucide-react";
 import { useFaceMesh, FaceMeshTrackingResult } from "../../hooks/useFaceMesh";
 import { calculateRiskScore, TelemetryMetrics } from "../../utils/formulas";
+import { supabase } from "../../utils/supabaseClient";
 
 interface Question {
   id: number;
@@ -99,6 +99,22 @@ export default function ExamPage() {
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [calibrationInstruction, setCalibrationInstruction] = useState("Grant webcam permissions to start.");
 
+  // Interactive Calibration steps (Option 3)
+  const [calibrationStep, setCalibrationStep] = useState<number>(1);
+  const [step1Passed, setStep1Passed] = useState(false);
+  const [step2Passed, setStep2Passed] = useState(false);
+  const [step3Passed, setStep3Passed] = useState(false);
+  const [calibratedBaselineEAR, setCalibratedBaselineEAR] = useState<number | null>(null);
+  const [calibratedBaselinePosture, setCalibratedBaselinePosture] = useState<number | null>(null);
+
+  const calibrationStepRef = useRef<number>(1);
+  const step1CenterFramesRef = useRef<number>(0);
+  const step2EarValuesRef = useRef<number[]>([]);
+  const step3PostureValuesRef = useRef<number[]>([]);
+
+  // Proctor alert message state (Option 5)
+  const [proctorAlert, setProctorAlert] = useState<{ message: string; timestamp: string } | null>(null);
+
   // Audio/Mic status
   const [abnormalAudioSeconds, setAbnormalAudioSeconds] = useState(0);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
@@ -125,6 +141,8 @@ export default function ExamPage() {
   // New proctoring checks states
   const [isSlouching, setIsSlouching] = useState(false);
   const [isCameraFrozen, setIsCameraFrozen] = useState(false);
+
+  const isStressAdapted = fatigueScore >= 50 || stressLevel === "High";
 
   // Box Breathing cycle states
   const [breathPhase, setBreathPhase] = useState<"In" | "Hold In" | "Out" | "Hold Out">("In");
@@ -181,6 +199,56 @@ export default function ExamPage() {
 
   // FaceMesh event callback handler
   const handleTrackingUpdate = (result: FaceMeshTrackingResult) => {
+    if (stageRef.current === "pre-check") {
+      if (!isCalibrating) return;
+
+      if (calibrationStepRef.current === 1) {
+        setCalibrationInstruction("Center your face inside the targeting ring...");
+        if (result.faceCount === 1 && result.isFaceCentered) {
+          step1CenterFramesRef.current += 1;
+          setCalibrationProgress(Math.min(10 + Math.round((step1CenterFramesRef.current / 30) * 25), 35));
+          if (step1CenterFramesRef.current >= 30) { // ~1 second
+            setStep1Passed(true);
+            calibrationStepRef.current = 2;
+            setCalibrationStep(2);
+            setCalibrationInstruction("Blink pattern calibration: Keep looking at the screen...");
+          }
+        } else {
+          if (step1CenterFramesRef.current > 0) step1CenterFramesRef.current -= 1;
+        }
+      } else if (calibrationStepRef.current === 2) {
+        if (result.faceCount === 1) {
+          step2EarValuesRef.current.push(result.earAvg);
+          const progressPercent = Math.min(35 + Math.round((step2EarValuesRef.current.length / 60) * 35), 70);
+          setCalibrationProgress(progressPercent);
+          if (step2EarValuesRef.current.length >= 60) { // ~2 seconds
+            const averageEAR = step2EarValuesRef.current.reduce((a, b) => a + b, 0) / step2EarValuesRef.current.length;
+            setCalibratedBaselineEAR(averageEAR);
+            setStep2Passed(true);
+            calibrationStepRef.current = 3;
+            setCalibrationStep(3);
+            setCalibrationInstruction("Posture baseline calibration: Sit straight and look at the camera...");
+          }
+        }
+      } else if (calibrationStepRef.current === 3) {
+        if (result.faceCount === 1 && result.noseY !== undefined) {
+          step3PostureValuesRef.current.push(result.noseY);
+          const progressPercent = Math.min(70 + Math.round((step3PostureValuesRef.current.length / 30) * 30), 100);
+          setCalibrationProgress(progressPercent);
+          if (step3PostureValuesRef.current.length >= 30) { // ~1 second
+            const averagePosture = step3PostureValuesRef.current.reduce((a, b) => a + b, 0) / step3PostureValuesRef.current.length;
+            setCalibratedBaselinePosture(averagePosture);
+            setStep3Passed(true);
+            calibrationStepRef.current = 4;
+            setCalibrationStep(4);
+            setIsCalibrating(false);
+            setCalibrationInstruction("Calibration completed! You are ready to start the exam.");
+          }
+        }
+      }
+      return;
+    }
+
     if (stageRef.current !== "active" && stageRef.current !== "wellness-intervention") return;
 
     setCurrentEAR(result.earAvg);
@@ -319,6 +387,61 @@ export default function ExamPage() {
     };
   }, []);
 
+  // Setup proctor real-time messaging listeners (Supabase Broadcast + localStorage sync)
+  useEffect(() => {
+    if (stage !== "active") return;
+
+    const handleIncomingAlert = (message: string) => {
+      const time = new Date().toLocaleTimeString();
+      setProctorAlert({ message, timestamp: time });
+      addTelemetryLog("proctor_intervention", `Message from Proctor: "${message}"`);
+      
+      // Clear notification after 10s
+      setTimeout(() => {
+        setProctorAlert(prev => {
+          if (prev && prev.message === message) return null;
+          return prev;
+        });
+      }, 10000);
+    };
+
+    // 1. Supabase Broadcast Channel subscription
+    let channel: any = null;
+    if (supabase) {
+      channel = supabase
+        .channel("proctor-alerts")
+        .on("broadcast", { event: "alert" }, ({ payload }) => {
+          console.log("Proctor broadcast alert received:", payload);
+          if (payload && payload.message) {
+            handleIncomingAlert(payload.message);
+          }
+        })
+        .subscribe();
+    }
+
+    // 2. Storage event fallback
+    const handleStorageEvent = (e: StorageEvent) => {
+      if (e.key === "mindguard_proctor_alert" && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (parsed && parsed.message) {
+            handleIncomingAlert(parsed.message);
+          }
+        } catch (err) {
+          console.error("Failed to parse proctor alert from local storage:", err);
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageEvent);
+
+    return () => {
+      if (supabase && channel) {
+        supabase.removeChannel(channel);
+      }
+      window.removeEventListener("storage", handleStorageEvent);
+    };
+  }, [stage]);
+
   // Web Audio microphone level checking
   const startAudioAnalysis = async () => {
     try {
@@ -451,21 +574,8 @@ export default function ExamPage() {
     try {
       await startTracking();
       setWebcamAllowed(true);
-      
-      const steps = [
-        { progress: 20, text: "Look straight at the screen..." },
-        { progress: 50, text: "Look left..." },
-        { progress: 80, text: "Look right..." },
-        { progress: 100, text: "Calibration successfully finished!" }
-      ];
-
-      for (const step of steps) {
-        await new Promise(r => setTimeout(r, 1200));
-        setCalibrationProgress(step.progress);
-        setCalibrationInstruction(step.text);
-      }
-
-      setIsCalibrating(false);
+      setCalibrationProgress(10);
+      setCalibrationInstruction("Webcam connected. Position your face in the center of the targeting ring...");
     } catch (err) {
       setIsCalibrating(false);
       setCalibrationInstruction("Calibration failed. Check permissions.");
@@ -580,157 +690,330 @@ export default function ExamPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#030712] text-gray-100 flex flex-col relative overflow-hidden">
-      {/* Background decoration */}
-      <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-cyan-500/5 rounded-full blur-[100px] pointer-events-none" />
-      <div className="absolute bottom-0 left-0 w-[400px] h-[400px] bg-pink-500/5 rounded-full blur-[100px] pointer-events-none" />
+    <div className={`min-h-screen bg-background text-on-surface flex flex-col relative overflow-hidden transition-all duration-700 ${
+      stage !== "pre-check" && isStressAdapted ? "stress-adapted" : ""
+    }`}>
+      {/* Link Material symbols */}
+      <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
 
-      {/* Header */}
-      <header className="w-full border-b border-gray-900 bg-gray-950/70 backdrop-blur-md px-6 py-4 flex justify-between items-center z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-cyan-400 to-pink-500 flex items-center justify-center">
-            <Shield className="w-4.5 h-4.5 text-gray-900 stroke-[2.5]" />
-          </div>
-          <div>
-            <h1 className="text-md font-bold text-white tracking-tight">MindGuard Exam OS</h1>
-            <p className="text-[9px] text-gray-500 font-mono">ACTIVE ENVIRONMENT MANAGER</p>
-          </div>
-        </div>
+      {/* TopAppBar */}
+      <header className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-surface border-b border-border-outline-variant transition-ease">
+        <div className="flex items-center gap-4">
+          <svg viewBox="0 0 600 200" xmlns="http://www.w3.org/2000/svg" className="w-40 h-auto">
+            {/* Outer Decorative Shield */}
+            <path d="M35 15 C35 15 70 10 90 5 C110 10 145 15 145 15 C145 55 140 95 90 115 C40 95 35 55 35 15Z" fill="none" stroke="#BFC7D2" strokeWidth="1" strokeDasharray="2 2"/>
+            
+            {/* Primary Shield Body */}
+            <path d="M40 20 C40 20 70 15 90 10 C110 15 140 20 140 20 C140 50 135 85 90 110 C45 85 40 50 40 20Z" fill="#006194"/>
+            
+            {/* Enhanced Neural Network Brain */}
+            <circle cx="90" cy="40" r="3.5" fill="#FFFFFF"/>
+            <circle cx="70" cy="55" r="3" fill="#FFFFFF"/>
+            <circle cx="110" cy="55" r="3" fill="#FFFFFF"/>
+            <circle cx="90" cy="65" r="4.5" fill="#00F0FF"/>
+            <circle cx="65" cy="75" r="3" fill="#FFFFFF"/>
+            <circle cx="115" cy="75" r="3" fill="#FFFFFF"/>
+            <circle cx="90" cy="90" r="3.5" fill="#FFFFFF"/>
+            
+            <g stroke="#FFFFFF" strokeWidth="1.2" strokeOpacity="0.6">
+              <line x1="90" y1="40" x2="70" y2="55"/>
+              <line x1="90" y1="40" x2="110" y2="55"/>
+              <line x1="70" y1="55" x2="90" y2="65"/>
+              <line x1="110" y1="55" x2="90" y2="65"/>
+              <line x1="90" y1="65" x2="65" y2="75"/>
+              <line x1="90" y1="65" x2="115" y2="75"/>
+              <line x1="65" y1="75" x2="90" y2="90"/>
+              <line x1="115" y1="75" x2="90" y2="90"/>
+              <line x1="70" y1="55" x2="65" y2="75"/>
+              <line x1="110" y1="55" x2="115" y2="75"/>
+            </g>
 
-        {stage === "active" && (
-          <div className="flex items-center gap-6">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-800 text-xs font-mono font-medium">
-              <Clock className="w-4 h-4 text-cyan-400" />
-              <span>TIME LEFT: </span>
-              <span className="text-cyan-400 font-bold text-sm w-12 text-right">{formatTime(examTimeRemaining)}</span>
+            {/* Typographic Branding */}
+            <text x="160" y="72" fontFamily="Outfit, sans-serif" letterSpacing="-1.5">
+              <tspan fill="#131B2E" fontWeight="600" fontSize="48">MIND</tspan>
+              <tspan fill="#006194" fontWeight="800" fontSize="48">GUARD</tspan>
+            </text>
+            
+            {/* Subtitle */}
+            <g transform="translate(160, 110)">
+              <rect width="12" height="1" fill="#BFC7D2" y="5"/>
+              <text x="20" y="10" fontFamily="Outfit, sans-serif" fontWeight="500" fontSize="12" fill="#505F76" letterSpacing="4">
+                EXAM OS PLATFORM
+              </text>
+            </g>
+          </svg>
+          {stage !== "pre-check" && isStressAdapted && (
+            <div className="px-3 py-1 bg-green-100 text-emerald-800 rounded-full border border-green-200 flex items-center gap-1.5 animate-pulse">
+              <span className="material-symbols-outlined text-[14px]">psychology</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider">ADAPTIVE VIEW ACTIVE</span>
             </div>
-            <button
-              onClick={handleSubmitExam}
-              className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900 font-bold text-xs hover:scale-[1.02] active:scale-[0.98] transition-all"
-            >
-              Submit Exam
-            </button>
-          </div>
-        )}
+          )}
+        </div>
+        <div className="flex items-center gap-6">
+          {stage === "active" && (
+            <div className="flex items-center gap-1.5 bg-surface-low px-3 py-1.5 border border-border-outline-variant rounded-lg">
+              <span className="material-symbols-outlined text-primary text-[20px]">timer</span>
+              <span className="font-mono text-sm font-bold text-primary timer-glow" id="exam-timer">{formatTime(examTimeRemaining)}</span>
+            </div>
+          )}
+          <button 
+            onClick={handleSubmitExam} 
+            className="px-4 py-2 bg-primary-accent hover:bg-primary text-white text-xs font-bold uppercase tracking-wider transition-ease cursor-pointer"
+          >
+            Submit Exam
+          </button>
+        </div>
       </header>
 
-      {/* Main stage panels */}
-      <div className="flex-1 w-full max-w-7xl mx-auto px-6 py-8 flex flex-col z-10 overflow-hidden">
-        {/* PRE-CHECK DIAGNOSTICS */}
-        {stage === "pre-check" && (
-          <div className="max-w-2xl mx-auto w-full glass-panel rounded-3xl p-8 border-cyan-500/20 my-auto">
-            <h2 className="text-2xl font-extrabold text-white mb-2 flex items-center gap-2">
-              <Camera className="w-6 h-6 text-cyan-400" />
-              Pre-Exam Environment Verification
-            </h2>
-            <p className="text-sm text-gray-400 font-light mb-6">
-              Before commencing the exam, the edge proctor needs to calibrate your camera stream. 
-              This is processed 100% client-side inside your browser for total privacy.
-            </p>
+      {/* SideNavBar (Left) */}
+      <aside className="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 z-40 flex flex-col p-4 bg-surface-container border-r border-border-outline-variant transition-ease hidden md:flex">
+        <div className="mb-6 p-2 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center text-white font-bold">ST</div>
+          <div>
+            <p className="text-xs font-bold text-on-surface">Candidate Portal</p>
+            <p className="text-[10px] text-text-secondary">Proctor Mode Enabled</p>
+          </div>
+        </div>
+        <nav className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-3 p-3 bg-secondary-container text-on-secondary-container font-bold rounded-lg border border-border-outline-variant">
+            <span className="material-symbols-outlined">quiz</span>
+            <span className="text-xs">Exams Portal</span>
+          </div>
+        </nav>
+        
+        {/* Simple proctor feed placeholder to preserve sidebar space */}
+        {webcamAllowed && (
+          <div className="mt-auto p-3 bg-surface-lowest rounded-xl border border-border-outline-variant flex flex-col items-center justify-center h-28 text-center">
+            <span className="text-[10px] text-primary-accent font-bold uppercase tracking-wider mb-1 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+              Live Biometrics
+            </span>
+            <p className="text-[9px] text-text-secondary font-light leading-snug">Proctor feed overlay active on desktop</p>
+          </div>
+        )}
+      </aside>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center mb-8">
-              <div className="relative aspect-video rounded-2xl bg-black border border-gray-800 overflow-hidden flex items-center justify-center">
-                <video
-                  ref={videoRef}
-                  className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-                  playsInline
-                  muted
+      {/* Main Content Area */}
+      <main className="md:ml-64 md:mr-80 pt-16 min-h-[calc(100vh-64px)] flex flex-col items-center relative transition-ease overflow-y-auto">
+        {/* Wellness Guided Box Breathing Overlay */}
+        {stage === "wellness-intervention" && (
+          <div className="absolute inset-0 bg-background/95 backdrop-blur-md z-45 flex items-center justify-center p-6 rounded-3xl border border-emerald-500/20">
+            <div className="max-w-md w-full text-center">
+              <Heart className="w-12 h-12 text-emerald-600 mx-auto fill-emerald-600/10 animate-pulse mb-4" />
+              <h2 className="text-xl font-bold text-primary mb-2">Refocus & Breathe</h2>
+              <p className="text-xs text-text-secondary font-light mb-6">
+                Cognitive overload triggers mistakes. Your exam progress is temporarily paused. 
+                Follow the guided box-breathing cycle to activate calm.
+              </p>
+
+              {/* Circular breathing prompt */}
+              <div className="relative w-48 h-48 mx-auto mb-8 flex items-center justify-center">
+                <div 
+                  className={`absolute inset-2 border-2 rounded-full transition-all duration-1000 ${
+                    breathPhase === "In" 
+                      ? "scale-105 border-emerald-500" 
+                      : breathPhase === "Hold In"
+                        ? "scale-110 border-emerald-400"
+                        : breathPhase === "Out"
+                          ? "scale-95 border-emerald-500/30"
+                          : "scale-90 border-emerald-500/10"
+                  }`}
                 />
-                <canvas
-                  ref={canvasRef}
-                  width="640"
-                  height="480"
-                  className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-                />
-                {!webcamAllowed && (
-                  <div className="absolute inset-0 bg-gray-950/90 flex flex-col items-center justify-center p-4 text-center">
-                    <Camera className="w-10 h-10 text-gray-600 mb-3" />
-                    <p className="text-xs text-gray-400">Webcam stream inactive</p>
+                
+                <div className="w-36 h-36 rounded-full bg-surface-lowest border border-border-outline flex flex-col items-center justify-center">
+                  <span className="text-[10px] text-emerald-600 uppercase tracking-widest font-bold font-mono">
+                    {breathPhase}
+                  </span>
+                  <span className="text-4xl font-extrabold text-primary my-1 font-mono">
+                    {breathSecondsLeft}s
+                  </span>
+                  <span className="text-[9px] text-text-secondary">
+                    Cycle {breathCyclesCompleted}/1
+                  </span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  setStage("active");
+                  addTelemetryLog("wellness_nudge", "Student bypassed wellness interval.");
+                }}
+                className="px-6 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs transition-all cursor-pointer shadow-md"
+              >
+                Resume Examination
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="w-full max-w-4xl p-8 flex-1 flex flex-col justify-between">
+          {/* Proctor Alert Toast (Option 5) */}
+          {proctorAlert && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs flex items-start justify-between gap-3 animate-bounce shadow-md print:hidden">
+              <div className="flex items-start gap-2.5">
+                <span className="material-symbols-outlined text-[20px] text-amber-600 flex-shrink-0 animate-pulse">chat_bubble</span>
+                <div>
+                  <p className="font-bold uppercase tracking-wider text-[10px] text-amber-700">Message from Proctor ({proctorAlert.timestamp})</p>
+                  <p className="mt-0.5 leading-relaxed text-sm font-medium">{proctorAlert.message}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setProctorAlert(null)}
+                className="text-amber-500 hover:text-amber-700 text-xs font-bold uppercase shrink-0 ml-4 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {stage === "pre-check" ? (
+            <div className="flex flex-col justify-between h-full max-w-2xl mx-auto py-12 relative">
+              <div>
+                <h2 className="text-2xl font-extrabold text-primary mb-2 flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[28px] text-primary-accent">camera</span>
+                  Pre-Exam Environment Verification
+                </h2>
+                <p className="text-sm text-text-secondary font-light mb-6">
+                  Before commencing the exam, the edge proctor needs to calibrate your camera stream. 
+                  This is processed 100% client-side inside your browser for total privacy.
+                </p>
+
+                {/* Vertical spacer for centered webcam target overlay */}
+                {webcamAllowed && (
+                  <div className="h-[200px] sm:h-[290px] w-full" />
+                )}
+
+                <div className="space-y-6">
+                  <div className="p-5 bg-surface-lowest border border-border-outline space-y-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-text-secondary font-bold uppercase tracking-wider">Calibration Progress</span>
+                      <span className="text-xs font-mono font-bold text-primary-accent">{calibrationProgress}%</span>
+                    </div>
+                    <div className="w-full bg-surface-container h-2 rounded-full overflow-hidden">
+                      <div 
+                        className="bg-primary-accent h-full transition-all duration-300" 
+                        style={{ width: `${calibrationProgress}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-on-surface font-medium">{calibrationInstruction}</p>
+
+                    {/* Step-by-Step checklist (Option 3) */}
+                    {webcamAllowed && (
+                      <div className="border-t border-border-outline-variant pt-3 space-y-2">
+                        <div className="flex items-center gap-2 text-xs">
+                          {step1Passed ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          ) : (
+                            <div className={`w-4 h-4 rounded-full border-2 ${calibrationStep === 1 ? "border-primary-accent animate-pulse" : "border-border-outline"} shrink-0`} />
+                          )}
+                          <span className={`${calibrationStep === 1 ? "font-bold text-primary" : "text-text-secondary"}`}>
+                            Step 1: Center your face inside the targeting ring
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          {step2Passed ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          ) : (
+                            <div className={`w-4 h-4 rounded-full border-2 ${calibrationStep === 2 ? "border-primary-accent animate-pulse" : "border-border-outline"} shrink-0`} />
+                          )}
+                          <span className={`${calibrationStep === 2 ? "font-bold text-primary" : "text-text-secondary"}`}>
+                            Step 2: Ocular EAR blink pattern registration
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          {step3Passed ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          ) : (
+                            <div className={`w-4 h-4 rounded-full border-2 ${calibrationStep === 3 ? "border-primary-accent animate-pulse" : "border-border-outline"} shrink-0`} />
+                          )}
+                          <span className={`${calibrationStep === 3 ? "font-bold text-primary" : "text-text-secondary"}`}>
+                            Step 3: Posture height baseline confirmation
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-5 bg-surface-low border border-border-outline space-y-3">
+                    <h4 className="text-xs font-bold text-primary-accent uppercase tracking-wider animate-pulse">Calibration Action Required</h4>
+                    <p className="text-xs text-text-secondary leading-relaxed font-light">
+                      Click the button below to start the webcam stream. Once active, look straight at the camera feed in the sidebar, and follow the proctoring alignment checkpoints.
+                    </p>
+                  </div>
+                </div>
+
+                {error && (
+                  <div className="mt-6 p-4 bg-red-50 border border-red-200 text-red-600 text-xs flex items-start gap-3">
+                    <span className="material-symbols-outlined text-[20px] text-red-600 flex-shrink-0">error_outline</span>
+                    <p>{error}</p>
                   </div>
                 )}
               </div>
 
-              <div className="space-y-4">
-                <div className="p-4 rounded-xl bg-gray-900/60 border border-gray-800">
-                  <span className="text-[10px] text-gray-500 font-semibold uppercase block mb-1">Calibration Progress</span>
-                  <div className="w-full bg-gray-800 h-2 rounded-full overflow-hidden mb-2">
-                    <div 
-                      className="bg-cyan-400 h-full transition-all duration-500" 
-                      style={{ width: `${calibrationProgress}%` }}
-                    />
-                  </div>
-                  <p className="text-xs text-gray-300 font-medium">{calibrationInstruction}</p>
-                </div>
-
-              </div>
-            </div>
-
-            {error && (
-              <div className="p-4 rounded-xl bg-pink-500/10 border border-pink-500/20 text-pink-400 text-xs flex items-start gap-3 mb-6">
-                <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-                <p>{error}</p>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-4 border-t border-gray-900 pt-6">
-              {calibrationProgress < 100 ? (
-                <>
+              <div className="flex justify-end gap-4 border-t border-border-outline pt-6 mt-12">
+                {calibrationProgress < 100 ? (
+                  <>
+                    <button
+                      onClick={handleSimulateDemoMode}
+                      className="px-6 py-3 border border-red-200 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">developer_board</span>
+                      Simulate Demo Mode
+                    </button>
+                    <button
+                      onClick={handleStartCalibration}
+                      disabled={isCalibrating || !isLoaded}
+                      className="px-6 py-3 bg-primary-accent text-white font-bold text-xs hover:bg-primary disabled:opacity-50 transition-all flex items-center gap-2 cursor-pointer"
+                    >
+                      {isCalibrating ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          Calibrating...
+                        </>
+                      ) : (
+                        <>
+                          <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+                          Allow & Calibrate Camera
+                        </>
+                      )}
+                    </button>
+                  </>
+                ) : (
                   <button
-                    onClick={handleSimulateDemoMode}
-                    className="px-6 py-3 rounded-xl border border-pink-500/30 bg-pink-500/10 text-pink-400 hover:bg-pink-500/20 font-bold text-sm transition-all flex items-center gap-2 cursor-pointer"
+                    onClick={handleBeginExam}
+                    className="px-8 py-3 bg-primary-accent text-white font-extrabold text-xs hover:bg-primary transition-all flex items-center gap-2 cursor-pointer shadow-md"
                   >
-                    <Cpu className="w-4 h-4 text-pink-400" />
-                    Simulate Demo Mode
+                    Start Examination
+                    <span className="material-symbols-outlined text-[18px]">arrow_forward</span>
                   </button>
-                  <button
-                    onClick={handleStartCalibration}
-                    disabled={isCalibrating || !isLoaded}
-                    className="px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900 font-bold text-sm hover:scale-[1.02] disabled:opacity-50 disabled:hover:scale-100 transition-all flex items-center gap-2 cursor-pointer"
-                  >
-                  {isCalibrating ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      Calibrating...
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4 stroke-[2.5]" />
-                      Allow & Calibrate Camera
-                    </>
-                  )}
-                </button>
-              </>
-            ) : (
-                <button
-                  onClick={handleBeginExam}
-                  className="px-8 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900 font-extrabold text-sm hover:scale-[1.02] transition-all flex items-center gap-2 glow-cyan"
-                >
-                  Start Examination
-                  <ChevronRight className="w-4 h-4 stroke-[2.5]" />
-                </button>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        )}
-
-        {/* ACTIVE EXAMINATION PORTAL */}
-        {stage === "active" && (
-          <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch overflow-hidden">
-            {/* Left Column: Exam Test Panel */}
-            <div className="lg:col-span-8 flex flex-col justify-between glass-panel rounded-3xl p-6 md:p-8 border-cyan-500/10 h-full">
+          ) : (
+            <div className="flex flex-col justify-between h-full">
               <div>
                 {/* Question index */}
-                <div className="flex justify-between items-center border-b border-gray-900 pb-4 mb-6">
-                  <span className="text-xs text-gray-500 font-semibold uppercase tracking-wider">
+                <div className={`flex justify-between items-center border-b pb-4 mb-6 border-border-outline-variant`}>
+                  <span className="text-xs text-text-secondary font-bold uppercase tracking-wider flex items-center gap-2">
                     Question {currentQuestionIdx + 1} of {EXAM_QUESTIONS.length}
+                    {isStressAdapted && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-green-100 text-emerald-800 rounded-full border border-green-200 animate-pulse">
+                        <span className="material-symbols-outlined text-[12px]">spa</span>
+                        Adaptive View Active
+                      </span>
+                    )}
                   </span>
-                  <span className="text-xs px-2.5 py-1 rounded bg-cyan-500/10 text-cyan-400 font-semibold font-mono uppercase">
+                  <span className="text-xs px-2.5 py-1 bg-surface-low border border-border-outline-variant rounded font-semibold font-mono uppercase text-text-secondary">
                     Core CS Concept
                   </span>
                 </div>
 
                 {/* Active Question */}
-                <h3 className="text-lg md:text-xl font-bold text-white leading-relaxed mb-6">
+                <h3 className={`font-bold transition-all duration-500 text-on-surface leading-relaxed ${
+                  isStressAdapted 
+                    ? "text-2xl font-semibold leading-loose mb-8" 
+                    : "text-lg md:text-xl mb-6"
+                }`}>
                   {EXAM_QUESTIONS[currentQuestionIdx].question}
                 </h3>
 
@@ -745,16 +1028,28 @@ export default function ExamPage() {
                           ...prev,
                           [EXAM_QUESTIONS[currentQuestionIdx].id]: idx
                         }))}
-                        className={`w-full text-left p-5 rounded-xl border text-sm transition-all flex items-center gap-4 group ${
-                          isSelected
-                            ? "bg-cyan-500/10 border-cyan-500 text-white font-medium shadow-lg shadow-cyan-500/5"
-                            : "bg-gray-900/40 border-gray-800 text-gray-400 hover:border-gray-700 hover:bg-gray-900/60 hover:text-gray-200"
+                        className={`w-full text-left transition-all duration-300 flex items-center gap-4 group cursor-pointer ${
+                          isStressAdapted
+                            ? `p-6 rounded-xl border text-base md:text-lg ${
+                                isSelected
+                                  ? "bg-[#f0f4e8] border-[#4c6a38] text-on-surface font-semibold shadow-inner"
+                                  : "bg-white border-border-outline text-text-secondary hover:border-primary-accent hover:bg-surface-container"
+                              }`
+                            : `p-5 rounded-xl border text-sm ${
+                                isSelected
+                                  ? "bg-secondary-container border-primary-accent text-on-surface font-semibold ring-1 ring-primary-accent"
+                                  : "bg-white border-border-outline text-text-secondary hover:border-primary-accent hover:bg-surface-container"
+                              }`
                         }`}
                       >
-                        <span className={`w-6 h-6 rounded-full border flex items-center justify-center text-xs font-mono font-bold transition-all ${
-                          isSelected
-                            ? "bg-cyan-400 border-cyan-400 text-gray-900"
-                            : "border-gray-800 text-gray-500 group-hover:border-gray-600"
+                        <span className={`w-8 h-8 rounded-full border flex items-center justify-center text-xs font-mono font-bold transition-all shrink-0 ${
+                          isStressAdapted
+                            ? isSelected
+                              ? "bg-[#4c6a38] border-[#4c6a38] text-white"
+                              : "border-border-outline text-text-secondary group-hover:border-primary-accent"
+                            : isSelected
+                              ? "bg-primary-accent border-primary-accent text-white"
+                              : "border-border-outline text-text-secondary group-hover:border-primary-accent"
                         }`}>
                           {String.fromCharCode(65 + idx)}
                         </span>
@@ -766,13 +1061,13 @@ export default function ExamPage() {
               </div>
 
               {/* Bottom Nav */}
-              <div className="flex justify-between items-center border-t border-gray-900 pt-6 mt-8">
+              <div className="flex justify-between items-center border-t pt-6 mt-8 border-border-outline-variant">
                 <button
                   disabled={currentQuestionIdx === 0}
                   onClick={() => setCurrentQuestionIdx(prev => prev - 1)}
-                  className="px-4 py-2.5 rounded-xl border border-gray-800 bg-gray-900/40 text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:text-gray-400 disabled:hover:bg-gray-900/40 transition-all flex items-center gap-2 cursor-pointer"
+                  className="px-4 py-2.5 rounded-full border border-border-outline text-on-surface hover:bg-surface-container disabled:opacity-30 transition-all flex items-center gap-2 cursor-pointer font-bold text-xs"
                 >
-                  <ChevronLeft className="w-4 h-4" />
+                  <span className="material-symbols-outlined text-[16px]">arrow_back</span>
                   Previous
                 </button>
 
@@ -780,12 +1075,12 @@ export default function ExamPage() {
                   {EXAM_QUESTIONS.map((_, idx) => (
                     <div
                       key={idx}
-                      className={`w-2 h-2 rounded-full transition-all ${
+                      className={`h-2 rounded-full transition-all ${
                         idx === currentQuestionIdx 
-                          ? "bg-cyan-400 w-4" 
+                          ? isStressAdapted ? "bg-[#4c6a38] w-4" : "bg-primary-accent w-4" 
                           : selectedAnswers[EXAM_QUESTIONS[idx].id] !== undefined
-                            ? "bg-cyan-800"
-                            : "bg-gray-800"
+                            ? "bg-text-secondary w-2"
+                            : "bg-border-outline w-2"
                       }`}
                     />
                   ))}
@@ -794,257 +1089,173 @@ export default function ExamPage() {
                 {currentQuestionIdx < EXAM_QUESTIONS.length - 1 ? (
                   <button
                     onClick={() => setCurrentQuestionIdx(prev => prev + 1)}
-                    className="px-5 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-gray-200 hover:text-white hover:border-gray-700 transition-all flex items-center gap-2 cursor-pointer"
+                    className="px-5 py-2.5 rounded-full bg-primary-accent text-white hover:bg-primary transition-all flex items-center gap-2 cursor-pointer font-bold text-xs"
                   >
                     Next
-                    <ChevronRight className="w-4 h-4" />
+                    <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
                   </button>
                 ) : (
-                  <button
-                    onClick={handleSubmitExam}
-                    className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-cyan-400 text-gray-900 font-extrabold transition-all flex items-center gap-2 glow-cyan"
-                  >
-                    Submit Exam
-                    <CheckCircle2 className="w-4 h-4 stroke-[2.5]" />
-                  </button>
+                  <div className="w-[80px]" />
                 )}
               </div>
             </div>
+          )}
+        </div>
+      </main>
 
-            {/* Right Column: MindGuard Proctor Panel */}
-            <div className="lg:col-span-4 flex flex-col gap-6">
-              {/* Webcam Video canvas */}
-              <div className="glass-panel rounded-3xl p-4 border-cyan-500/10 relative overflow-hidden flex flex-col">
-                <span className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <Activity className="w-3.5 h-3.5 animate-pulse" />
-                  Edge Face-Mesh Stream
-                </span>
-                
-                <div className="relative aspect-video rounded-2xl bg-black border border-gray-900 overflow-hidden">
-                  <video
-                    ref={videoRef}
-                    className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-                    playsInline
-                    muted
-                  />
-                  <canvas
-                    ref={canvasRef}
-                    width="640"
-                    height="480"
-                    className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-                  />
-                </div>
-              </div>
-
-              {/* Edge Telemetry Indicators */}
-              <div className="glass-panel rounded-3xl p-5 border-cyan-500/10 flex-1 flex flex-col justify-between">
-                <div>
-                  <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-900 pb-2 mb-4">
-                    Cognitive Telemetry Logs
-                  </h4>
-
-                  <div className="space-y-4">
-                    {/* Attention indicator */}
+      {/* Right Sidebar - Proctor Telemetry */}
+      <aside className="fixed right-0 top-16 h-[calc(100vh-64px)] w-80 z-40 bg-surface border-l border-border-outline-variant flex flex-col transition-ease">
+        <div className="p-4 border-b border-border-outline-variant bg-surface-low">
+          <h3 className="text-xs font-bold text-on-surface uppercase tracking-wider mb-3">Live Proctoring</h3>
+          <div className="p-3 bg-surface-lowest rounded-lg border border-border-outline-variant flex justify-between items-center text-xs text-text-secondary">
+            <span className="flex items-center gap-1">
+              <span className="material-symbols-outlined text-[16px] text-emerald-500">verified_user</span>
+              Proctor Mode: Safe
+            </span>
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          {stage === "pre-check" ? (
+            <div className="flex flex-col items-center justify-center text-center p-4 min-h-[200px]">
+              <span className="material-symbols-outlined text-[32px] text-text-secondary/40 mb-2">shield</span>
+              <p className="text-xs font-bold text-on-surface uppercase tracking-wider mb-1">Calibration Mode</p>
+              <p className="text-[10px] text-text-secondary font-light">Proctoring telemetry will initialize once the exam begins.</p>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <div>
+                <h4 className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider mb-3">Cognitive Telemetry</h4>
+                <div className="space-y-4">
+                  {/* Gaze Stability */}
+                  <div className="space-y-1">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-500 font-medium">Gaze Tracking:</span>
-                      {currentGaze < 0.35 || currentGaze > 0.65 ? (
-                        <span className="px-2 py-0.5 rounded bg-yellow-500/10 text-yellow-500 font-bold font-mono">GAZE SHIFTED</span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-bold font-mono">CENTERED</span>
-                      )}
-                    </div>
-
-                    {/* Eye aspect ratio meter */}
-                    <div className="space-y-1">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-gray-500 font-medium">Eye Aspect Ratio (EAR):</span>
-                        <span className="font-mono text-gray-300 font-semibold">{currentEAR.toFixed(3)}</span>
-                      </div>
-                      <div className="w-full bg-gray-950 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className={`h-full transition-all duration-300 ${currentEAR < 0.18 ? "bg-secondary" : "bg-primary"}`}
-                          style={{ width: `${Math.min((currentEAR / 0.3) * 100, 100)}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Total blink count */}
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-500 font-medium">Blink Count:</span>
-                      <span className="font-mono text-cyan-400 font-bold text-sm">{blinkCount}</span>
-                    </div>
-
-                    {/* Stress Level */}
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-500 font-medium">Stress Indicator:</span>
-                      <span className={`px-2 py-0.5 rounded font-bold font-mono text-[10px] ${
-                        stressLevel === "High" 
-                          ? "bg-pink-500/10 text-pink-500" 
-                          : stressLevel === "Medium"
-                            ? "bg-yellow-500/10 text-yellow-500"
-                            : "bg-cyan-500/10 text-cyan-400"
-                      }`}>
-                        {stressLevel}
+                      <span className="text-text-secondary">Gaze Stability</span>
+                      <span className={`font-bold ${currentGaze < 0.35 || currentGaze > 0.65 ? "text-amber-500" : "text-primary-accent"}`}>
+                        {currentGaze < 0.35 || currentGaze > 0.65 ? "Gaze Shifted" : "Optimal"}
                       </span>
                     </div>
-
-                    {/* Fatigue Score */}
-                    <div className="space-y-1">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-gray-500 font-medium">Exhaustion Factor:</span>
-                        <span className={`font-mono font-bold ${fatigueScore > 60 ? "text-pink-500" : "text-gray-300"}`}>{fatigueScore}%</span>
-                      </div>
-                      <div className="w-full bg-gray-950 h-1.5 rounded-full overflow-hidden">
-                        <div 
-                          className="bg-pink-500 h-full transition-all duration-300"
-                          style={{ width: `${fatigueScore}%` }}
-                        />
-                      </div>
+                    <div className="telemetry-bar">
+                      <div className="telemetry-progress bg-primary-accent" style={{ width: `${Math.round(currentGaze * 100)}%` }}></div>
                     </div>
+                  </div>
 
-                    {/* Posture Status */}
+                  {/* EAR */}
+                  <div className="space-y-1">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-500 font-medium">Posture Check:</span>
-                      {isSlouching ? (
-                        <span className="px-2 py-0.5 rounded bg-pink-500/10 text-pink-500 font-bold font-mono">SLOUCHING</span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-bold font-mono">OPTIMAL</span>
-                      )}
+                      <span className="text-text-secondary">Engagement (EAR)</span>
+                      <span className={`font-bold ${currentEAR < 0.18 ? "text-red-500" : "text-green-600"}`}>
+                        {currentEAR < 0.18 ? "Closed" : "Optimal"}
+                      </span>
                     </div>
+                    <div className="telemetry-bar">
+                      <div className="telemetry-progress bg-green-500" style={{ width: `${Math.min((currentEAR / 0.3) * 100, 100)}%` }}></div>
+                    </div>
+                  </div>
 
-                    {/* Camera Stream Status */}
+                  {/* Stress index */}
+                  <div className="space-y-1">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-500 font-medium">Camera Feed:</span>
-                      {isCameraFrozen ? (
-                        <span className="px-2 py-0.5 rounded bg-pink-500/10 text-pink-500 font-bold font-mono animate-pulse">STREAM FROZEN</span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-bold font-mono">ACTIVE</span>
-                      )}
+                      <span className="text-text-secondary">Stress Index</span>
+                      <span className={`font-bold ${stressLevel === "High" ? "text-red-500" : "text-tertiary"}`}>{stressLevel}</span>
+                    </div>
+                    <div className="telemetry-bar">
+                      <div className="telemetry-progress bg-tertiary-container" style={{ width: `${Math.round(riskScore * 100)}%` }}></div>
                     </div>
                   </div>
                 </div>
-
-                {/* Risk score gauge */}
-                <div className="border-t border-gray-900 pt-4 mt-4">
-                  <div className="flex justify-between items-center mb-1 text-xs">
-                    <span className="text-gray-500 font-bold uppercase tracking-wider">Humane Risk Index:</span>
-                    <span className={`font-mono font-extrabold text-sm ${
-                      riskScore > 0.6 
-                        ? "text-pink-500" 
-                        : riskScore > 0.3 
-                          ? "text-yellow-500" 
-                          : "text-cyan-400"
-                    }`}>
-                      {(riskScore * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                  <div className="w-full bg-gray-950 h-2 rounded-full overflow-hidden">
-                    <div 
-                      className={`h-full transition-all duration-500 ${
-                        riskScore > 0.6 
-                          ? "bg-secondary" 
-                          : riskScore > 0.3 
-                            ? "bg-yellow-500" 
-                            : "bg-primary"
-                      }`}
-                      style={{ width: `${riskScore * 100}%` }}
-                    />
-                  </div>
-
-                  <div className="mt-4 flex gap-2">
-                    <button 
-                      onClick={() => triggerWellnessIntervention("Student requested a voluntary stress reset interval.")}
-                      className="w-full py-2 rounded-xl border border-gray-800 bg-gray-900/60 hover:bg-gray-900 hover:border-pink-500/30 hover:text-pink-400 text-xs font-semibold text-gray-400 flex items-center justify-center gap-1.5 transition-all"
-                    >
-                      <Heart className="w-3.5 h-3.5 fill-current text-pink-500" />
-                      Take Calming Break
-                    </button>
-                  </div>
-                </div>
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* WELLNESS INTERVENTION MODAL */}
-        {stage === "wellness-intervention" && (
-          <div className="max-w-md mx-auto w-full glass-panel rounded-3xl p-8 border-pink-500/20 text-center my-auto pulse-glow-pink">
-            <Heart className="w-12 h-12 text-pink-500 mx-auto fill-pink-500/20 animate-pulse mb-4" />
-            <h2 className="text-xl font-bold text-white mb-2">Refocus & Breathe</h2>
-            <p className="text-xs text-gray-400 font-light mb-6">
-              Cognitive overload triggers mistakes. Your exam progress is temporarily paused. 
-              Follow the guided box-breathing cycle to activate calm.
-            </p>
-
-            {/* Circular breathing prompt */}
-            <div className="relative w-48 h-48 mx-auto mb-8 flex items-center justify-center">
-              {/* Outer pulsing ring */}
-              <div 
-                className={`absolute inset-2 border-2 border-pink-500/30 rounded-full transition-all duration-1000 ${
-                  breathPhase === "In" 
-                    ? "scale-105 border-pink-500" 
-                    : breathPhase === "Hold In"
-                      ? "scale-110 border-pink-400"
-                      : breathPhase === "Out"
-                        ? "scale-95 border-pink-500/30"
-                        : "scale-90 border-pink-500/10"
-                }`}
-              />
-              
-              {/* Inner core */}
-              <div className="w-36 h-36 rounded-full bg-gray-950 border border-gray-900 flex flex-col items-center justify-center">
-                <span className="text-[10px] text-pink-400 uppercase tracking-widest font-bold font-mono">
-                  {breathPhase}
-                </span>
-                <span className="text-4xl font-extrabold text-white my-1 font-mono">
-                  {breathSecondsLeft}s
-                </span>
-                <span className="text-[9px] text-gray-500">
-                  Cycle {breathCyclesCompleted}/1
-                </span>
-              </div>
-            </div>
-
-            <button
-              onClick={() => {
-                setStage("active");
-                addTelemetryLog("wellness_nudge", "Student bypassed wellness interval.");
-              }}
-              className="px-6 py-2.5 rounded-xl border border-gray-800 bg-gray-900/60 hover:bg-gray-900 hover:border-gray-700 text-xs text-gray-300 font-semibold transition-all w-full"
-            >
-              Resume Examination
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Realtime Event Monitor Logs console drawer */}
-      {stage === "active" && (
-        <div className="w-full border-t border-gray-900 bg-gray-950/60 py-3 px-6 z-10">
-          <div className="max-w-7xl mx-auto flex items-center gap-6">
-            <span className="text-[10px] text-gray-500 font-mono flex items-center gap-1.5 uppercase font-bold shrink-0">
-              <Smile className="w-3.5 h-3.5 text-cyan-400" />
-              Event Ledger:
-            </span>
-            <div className="flex-1 overflow-x-auto whitespace-nowrap scrollbar-none flex gap-6 text-[10px] font-mono text-gray-400">
-              {telemetryLogs.length === 0 ? (
-                <span>No anomalies logged. Secure integrity layer active.</span>
-              ) : (
-                telemetryLogs.slice(0, 4).map((log, i) => (
-                  <span key={i} className="flex gap-1.5 items-center">
-                    <span className="text-gray-600 font-semibold">[{log.timestamp}]</span>
-                    <span className={`font-bold ${
-                      log.event === "security_alert" 
-                        ? "text-pink-400" 
-                        : log.event === "gaze_deviation" || log.event === "tab_switch"
-                          ? "text-yellow-500"
-                          : "text-cyan-400"
-                    }`}>{log.event.toUpperCase()}</span>
-                    <span className="text-gray-500">({log.details})</span>
+              {/* Security Indicators */}
+              <div className="p-3 bg-surface-container rounded-lg border border-border-outline-variant space-y-2">
+                <p className="text-[10px] font-bold text-on-surface uppercase tracking-wider">Environment Security</p>
+                <div className="flex justify-between items-center text-xs text-on-surface-variant">
+                  <span className="flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[16px] text-green-500">mic</span>
+                    Audio Clean
                   </span>
-                ))
-              )}
+                  <span className="flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[16px] text-green-500">visibility</span>
+                    Single Face
+                  </span>
+                </div>
+              </div>
             </div>
+          )}
+        </div>
+
+        {/* Buttons */}
+        <div className="p-4 border-t border-border-outline-variant mt-auto space-y-2 bg-surface-container-low">
+          <button 
+            onClick={() => triggerWellnessIntervention("Student requested a voluntary stress reset interval.")}
+            className="w-full py-2.5 bg-green-50 text-green-800 border border-green-200 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 hover:bg-green-100 transition-all active:scale-[0.98] cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[18px]">spa</span>
+            Take Calming Break
+          </button>
+          {stage === "active" && (
+            <button 
+              onClick={() => setFatigueScore(prev => prev === 55 ? 0 : 55)}
+              className="w-full py-2.5 bg-surface-lowest text-text-secondary border border-border-outline rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 hover:bg-surface transition-all active:scale-[0.98] cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[18px]">psychology</span>
+              {fatigueScore >= 50 ? "Clear Simulated Fatigue" : "Simulate High Fatigue"}
+            </button>
+          )}
+        </div>
+      </aside>
+
+      {/* Live Proctoring Webcam Feed Overlay (Option 3 & 5) */}
+      {webcamAllowed && (
+        <div className={`transition-all duration-500 border border-border-outline-variant bg-surface-lowest p-2 rounded-xl shadow-lg z-50 ${
+          stage === "pre-check"
+            ? "fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-[62%] w-[320px] sm:w-[480px] aspect-video"
+            : "fixed md:bottom-6 md:left-6 bottom-4 right-4 w-40 md:w-52 aspect-video"
+        }`}>
+          <div className="relative w-full h-full bg-black rounded-lg overflow-hidden">
+            <video
+              ref={videoRef}
+              className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+              playsInline
+              muted
+            />
+            <canvas
+              ref={canvasRef}
+              width="640"
+              height="480"
+              className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+            />
+            
+            {/* Circular targeting ring overlay in pre-check stage */}
+            {stage === "pre-check" && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                {/* Outer spinning ring */}
+                <div className={`w-36 h-36 sm:w-52 sm:h-52 rounded-full border-4 border-dashed transition-colors duration-300 ${
+                  step1Passed ? "border-emerald-500/60" : "border-primary-accent/40"
+                } animate-[spin_60s_linear_infinite]`}></div>
+                
+                {/* Inner solid ring */}
+                <div className={`absolute w-32 h-32 sm:w-48 sm:h-48 rounded-full border-2 transition-colors duration-300 ${
+                  step1Passed ? "border-emerald-500" : "border-primary-accent/80"
+                }`}></div>
+                
+                {/* Guide silhouette */}
+                <svg className={`absolute w-20 h-20 sm:w-28 sm:h-28 transition-colors duration-300 ${
+                  step1Passed ? "text-emerald-500/20" : "text-primary-accent/30"
+                }`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1">
+                  <path d="M12 2a5 5 0 0 0-5 5v3a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z" />
+                  <path d="M4 19a8 8 0 0 1 16 0" />
+                </svg>
+                
+                {/* Status banner on feed */}
+                <div className="absolute bottom-2 px-3 py-1 bg-black/60 backdrop-blur-sm rounded-full text-[9px] font-bold text-white uppercase tracking-wider font-mono">
+                  {calibrationStep === 1 && "Align Face"}
+                  {calibrationStep === 2 && "Recording Eyes"}
+                  {calibrationStep === 3 && "Hold Still (Posture)"}
+                  {calibrationStep === 4 && "Completed!"}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

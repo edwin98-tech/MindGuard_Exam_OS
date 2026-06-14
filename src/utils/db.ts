@@ -63,21 +63,23 @@ export async function getAllSessions(): Promise<SessionData[]> {
       if (error) throw error;
 
       if (data) {
-        return data.map(row => ({
-          id: row.id,
-          date: new Date(row.date).toLocaleString(),
-          studentName: row.student_name,
-          metrics: row.metrics,
-          timeline: row.timeline,
-          aiReport: row.ai_report,
-        }));
+        return data
+          .filter(row => !row.metrics || row.metrics.deleted !== true)
+          .map(row => ({
+            id: row.id,
+            date: new Date(row.date).toLocaleString(),
+            studentName: row.student_name,
+            metrics: row.metrics,
+            timeline: row.timeline,
+            aiReport: row.ai_report,
+          }));
       }
     } catch (err) {
       console.warn("Supabase fetch failed. Falling back to local file storage.", err);
     }
   }
 
-  return getLocalSessions();
+  return getLocalSessions().filter(s => !s.metrics || (s.metrics as any).deleted !== true);
 }
 
 /**

@@ -13,5 +13,40 @@
     "roll_no": "CS-2026-003",
     "name": "Taylor Chen",
     "dob": "2004-08-15"
+  },
+  {
+    "roll_no": "CS-2026-004",
+    "name": "Morgan Johnson",
+    "dob": "2005-09-30"
+  },
+  {
+    "roll_no": "CS-2026-005",
+    "name": "Casey Williams",
+    "dob": "2005-01-22"
+  },
+  {
+    "roll_no": "CS-2026-006",
+    "name": "Jamie Davis",
+    "dob": "2006-03-08"
+  },
+  {
+    "roll_no": "CS-2026-007",
+    "name": "Avery Miller",
+    "dob": "2004-12-14"
+  },
+  {
+    "roll_no": "CS-2026-008",
+    "name": "Robin Wilson",
+    "dob": "2005-07-19"
+  },
+  {
+    "roll_no": "CS-2026-009",
+    "name": "Riley Moore",
+    "dob": "2005-05-05"
+  },
+  {
+    "roll_no": "CS-2026-010",
+    "name": "Peyton Taylor",
+    "dob": "2006-02-28"
   }
 ]

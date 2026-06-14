@@ -29,6 +29,9 @@ export interface FaceMeshTrackingResult {
   offScreenGazeCount: number;
   isSlouching: boolean;
   isFrozen: boolean;
+  noseX: number;
+  noseY: number;
+  isFaceCentered: boolean;
 }
 
 export function useFaceMesh(
@@ -49,8 +52,45 @@ export function useFaceMesh(
   const frozenFramesRef = useRef<number>(0);
   const isFrozenRef = useRef<boolean>(false);
 
+  const lastRecreateTimeRef = useRef<number>(0);
+  const recreateCountRef = useRef<number>(0);
+  const isHookActiveRef = useRef<boolean>(true);
+
+  const initFaceMeshInstance = () => {
+    if (!window.FaceMesh) return;
+
+    if (faceMeshRef.current) {
+      try {
+        faceMeshRef.current.close();
+      } catch (e) {
+        console.warn("Failed to close old faceMesh:", e);
+      }
+    }
+
+    const faceMesh = new window.FaceMesh({
+      locateFile: (file: string) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+      },
+    });
+
+    faceMesh.setOptions({
+      maxNumFaces: 2,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
+
+    faceMesh.onResults((results: any) => {
+      if (!isHookActiveRef.current) return;
+      processResults(results);
+    });
+
+    faceMeshRef.current = faceMesh;
+    console.log("MediaPipe FaceMesh instance initialized.");
+  };
+
   useEffect(() => {
-    let active = true;
+    isHookActiveRef.current = true;
 
     async function initializeMediaPipe() {
       try {
@@ -60,47 +100,31 @@ export function useFaceMesh(
         // Also load drawing helpers for drawing on canvas
         await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js");
 
-        if (!active) return;
+        if (!isHookActiveRef.current) return;
 
         if (!window.FaceMesh || !window.Camera) {
           throw new Error("MediaPipe libraries failed to initialize from CDN.");
         }
 
-        const faceMesh = new window.FaceMesh({
-          locateFile: (file: string) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
-          },
-        });
-
-        faceMesh.setOptions({
-          maxNumFaces: 2,
-          refineLandmarks: true,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        });
-
-        faceMesh.onResults((results: any) => {
-          if (!active) return;
-          processResults(results);
-        });
-
-        faceMeshRef.current = faceMesh;
+        initFaceMeshInstance();
         setIsLoaded(true);
       } catch (err: any) {
         console.error(err);
-        if (active) setError(err.message || "Failed to load proctoring modules.");
+        if (isHookActiveRef.current) setError(err.message || "Failed to load proctoring modules.");
       }
     }
 
     initializeMediaPipe();
 
     return () => {
-      active = false;
+      isHookActiveRef.current = false;
       if (cameraRef.current) {
         cameraRef.current.stop();
       }
       if (faceMeshRef.current) {
-        faceMeshRef.current.close();
+        try {
+          faceMeshRef.current.close();
+        } catch (e) {}
       }
     };
   }, []);
@@ -113,12 +137,38 @@ export function useFaceMesh(
         onFrame: async () => {
           const video = videoElementRef.current;
           if (video && faceMeshRef.current) {
-            // Check readyState and dimensions to prevent WebAssembly crash/abort
-            if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+            // Check readyState, video size, and client visibility size to prevent WebAssembly aborts/crashes
+            if (
+              video.readyState >= 2 &&
+              video.videoWidth > 0 &&
+              video.videoHeight > 0 &&
+              video.clientWidth > 0 &&
+              video.clientHeight > 0
+            ) {
               try {
                 await faceMeshRef.current.send({ image: video });
-              } catch (err) {
+              } catch (err: any) {
                 console.warn("MediaPipe faceMesh.send failed:", err);
+                const errMsg = err?.message || String(err);
+                if (errMsg.includes("abort") || errMsg.includes("RuntimeError") || errMsg.includes("Cannot call")) {
+                  const now = performance.now();
+                  // Rate limit recreations: max 3 attempts within 10 seconds
+                  if (now - lastRecreateTimeRef.current > 10000) {
+                    recreateCountRef.current = 0;
+                  }
+                  if (recreateCountRef.current < 3) {
+                    recreateCountRef.current += 1;
+                    lastRecreateTimeRef.current = now;
+                    console.log(`Self-healing: WASM aborted. Recreating FaceMesh instance (attempt ${recreateCountRef.current}/3)...`);
+                    try {
+                      initFaceMeshInstance();
+                    } catch (recreateErr) {
+                      console.error("Self-healing failed to recreate FaceMesh:", recreateErr);
+                    }
+                  } else {
+                    console.error("Self-healing: Max recreation attempts exceeded.");
+                  }
+                }
               }
             }
           }
@@ -206,6 +256,9 @@ export function useFaceMesh(
       offScreenGazeCount: 0,
       isSlouching: false,
       isFrozen,
+      noseX: 0.5,
+      noseY: 0.5,
+      isFaceCentered: false,
     };
 
     if (faceCount > 0) {
@@ -284,6 +337,10 @@ export function useFaceMesh(
         offScreenGazeFramesRef.current = 0;
       }
 
+      const noseX = noseTip.x;
+      const noseY = noseTip.y;
+      const isFaceCentered = faceCount === 1 && noseX >= 0.38 && noseX <= 0.62 && noseY >= 0.38 && noseY <= 0.62;
+
       trackingData = {
         earLeft,
         earRight,
@@ -297,6 +354,9 @@ export function useFaceMesh(
         offScreenGazeCount: offScreenGazeFramesRef.current,
         isSlouching,
         isFrozen,
+        noseX,
+        noseY,
+        isFaceCentered,
       };
 
       // Draw custom glowing neon wireframe mesh on Canvas
@@ -308,38 +368,43 @@ export function useFaceMesh(
 
   // Draws a premium glowing cyberpunk face mesh wireframe
   const drawCustomFaceMesh = (ctx: CanvasRenderingContext2D, landmarks: Point3D[]) => {
+    const isStressActive = typeof document !== "undefined" && document.querySelector(".stress-adapted") !== null;
+    const primaryColor = isStressActive ? "#d97706" : "#00f2fe"; // Warm Amber or Ocean Blue
+    const secondaryColor = isStressActive ? "rgba(217, 119, 6, 0.08)" : "rgba(0, 242, 254, 0.08)";
+    const accentColor = isStressActive ? "#dc2626" : "#ff007f"; // Red or pink
+
     // We can draw the face connections if the helper is loaded
     if (window.drawConnectors && window.FACEMESH_TESSELATION) {
-      // Background tesselation - subtle cyan lines
+      // Background tesselation - subtle lines
       window.drawConnectors(ctx, landmarks, window.FACEMESH_TESSELATION, {
-        color: "rgba(0, 242, 254, 0.08)",
+        color: secondaryColor,
         lineWidth: 0.5,
       });
 
-      // Eyes - cyan
+      // Eyes
       window.drawConnectors(ctx, landmarks, window.FACEMESH_LEFT_EYE, {
-        color: "#00f2fe",
+        color: primaryColor,
         lineWidth: 1.5,
       });
       window.drawConnectors(ctx, landmarks, window.FACEMESH_RIGHT_EYE, {
-        color: "#00f2fe",
+        color: primaryColor,
         lineWidth: 1.5,
       });
 
-      // Iris - bright pink/purple
+      // Iris
       if (window.FACEMESH_LEFT_IRIS && window.FACEMESH_RIGHT_IRIS) {
         window.drawConnectors(ctx, landmarks, window.FACEMESH_LEFT_IRIS, {
-          color: "#ff007f",
+          color: accentColor,
           lineWidth: 1.5,
         });
         window.drawConnectors(ctx, landmarks, window.FACEMESH_RIGHT_IRIS, {
-          color: "#ff007f",
+          color: accentColor,
           lineWidth: 1.5,
         });
       }
     } else {
       // Fallback: draw outline dots
-      ctx.fillStyle = "rgba(0, 242, 254, 0.4)";
+      ctx.fillStyle = isStressActive ? "rgba(217, 119, 6, 0.4)" : "rgba(0, 242, 254, 0.4)";
       landmarks.forEach((pt, index) => {
         // Draw every 5th landmark for performance and simplicity
         if (index % 6 === 0) {

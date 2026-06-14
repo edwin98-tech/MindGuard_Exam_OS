@@ -1,4 +1,26 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MindGuard Exam OS
+
+MindGuard Exam OS is a privacy-first, humane, browser-based examination environment engineered to shift the proctoring paradigm away from hostile, punitive surveillance and toward cognitive wellness optimization. 
+
+Traditional proctoring software treats students like structural adversaries—penalizing normal human behaviors like eye strain, shifting posture, or heavy blinking due to exhaustion. This design causes massive test anxiety and introduces high failure rates.
+
+MindGuard solves this by deploying a hybrid infrastructure. By running low-latency client-side edge computer vision pipelines and rendering UI states with high-performance web components, the system filters out natural fatigue anomalies locally and for free. 
+
+## Key Features
+
+- **Fatigue-Aware Proctoring**: Detects micro-blink bursts and heavy eyelids. If fatigue is detected, sensitivity is adjusted dynamically.
+- **Intervention Engine**: Opens a non-obtrusive wellness overlay to guide students through science-backed breathing exercises to lower anxiety.
+- **TabShield Lite**: Tracks tab switching, fullscreen exits, copying attempts, and device changes, saving them locally.
+- **Audit Timeline**: Logs a tamper-evident, chronologically ordered event timeline containing risk labels and telemetry metrics.
+- **ExamPulse/ExamReady Diagnostics**: Pre-exam environment verification ensuring webcam, browser API access, and lighting are sufficient before commencing.
+
+## Technology Stack
+
+- **Frontend**: Next.js 14+ (App Router), Tailwind CSS
+- **Design System**: Google Stitch Web Components
+- **Client-Side ML**: MediaPipe Face Mesh, TensorFlow.js
+- **Agentic Orchestration**: Antigravity Edge Agent & Gemini 3.1 Flash-Lite API
+- **Data Persistence**: Supabase (PostgreSQL, Realtime, Edge Functions)
 
 ## Getting Started
 
@@ -16,21 +38,15 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Core Mathematical Formulations
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+To ensure objective evaluation, the edge agent computes specific metrics:
 
-## Learn More
+### Eye Aspect Ratio (EAR)
+To detect blinking frequency and duration, we map eye landmarks and compute EAR. A drop in EAR below 0.20 indicates a blink.
 
-To learn more about Next.js, take a look at the following resources:
+### Gaze Tracking Ratio ($G_x$)
+Gaze direction is estimated by tracking the pupil center relative to the eye corners. Significant deviations from $G_x \approx 0.5$ indicate the student is looking away from the exam screen.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Custom Behavior Risk Scoring Model
+We implement an algorithmic risk evaluation rule engine based on tab switches, off-screen gaze, multiple faces, and abnormal audio.
