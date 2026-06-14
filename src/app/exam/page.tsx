@@ -620,6 +620,39 @@ export default function ExamPage() {
     }
   };
 
+  // Manually advance calibration step on button click
+  const handleManualCapture = () => {
+    if (!isCalibrating || calibrationStepRef.current >= 4) return;
+    const step = calibrationStepRef.current;
+
+    if (step === 1) {
+      setStep1Passed(true);
+      calibrationStepRef.current = 2;
+      setCalibrationStep(2);
+      setCalibrationProgress(35);
+      setCalibrationInstruction("Blink pattern calibration: Keep looking at the screen...");
+    } else if (step === 2) {
+      const earVals = step2EarValuesRef.current;
+      const avg = earVals.length > 0 ? earVals.reduce((a, b) => a + b, 0) / earVals.length : 0.25;
+      setCalibratedBaselineEAR(avg);
+      setStep2Passed(true);
+      calibrationStepRef.current = 3;
+      setCalibrationStep(3);
+      setCalibrationProgress(70);
+      setCalibrationInstruction("Posture baseline: Sit straight and look at the camera...");
+    } else if (step === 3) {
+      const postureVals = step3PostureValuesRef.current;
+      const avg = postureVals.length > 0 ? postureVals.reduce((a, b) => a + b, 0) / postureVals.length : 0.5;
+      setCalibratedBaselinePosture(avg);
+      setStep3Passed(true);
+      calibrationStepRef.current = 4;
+      setCalibrationStep(4);
+      setIsCalibrating(false);
+      setCalibrationProgress(100);
+      setCalibrationInstruction("Calibration completed! You are ready to start the exam.");
+    }
+  };
+
   // Start the actual examination
   const handleBeginExam = () => {
     setStage("active");
@@ -1143,7 +1176,8 @@ export default function ExamPage() {
         </div>
       </main>
 
-      {/* Right Sidebar - Proctor Telemetry */}
+      {/* Right Sidebar - Proctor Telemetry (only shown during active exam) */}
+      {stage !== "pre-check" && (
       <aside className="fixed right-0 top-16 h-[calc(100vh-64px)] w-80 z-40 bg-surface border-l border-border-outline-variant flex flex-col transition-ease">
         <div className="p-4 border-b border-border-outline-variant bg-surface-low">
           <h3 className="text-xs font-bold text-on-surface uppercase tracking-wider mb-3">Live Proctoring</h3>
@@ -1244,6 +1278,8 @@ export default function ExamPage() {
           )}
         </div>
       </aside>
+      )}
+
 
       {/* Live Proctoring Webcam Feed — always mounted so videoRef is never null */}
       <div
@@ -1298,8 +1334,22 @@ export default function ExamPage() {
               </div>
             </div>
           )}
+
+          {/* Capture & Continue button — always inside relative container so absolute works */}
+          {stage === "pre-check" && isCalibrating && calibrationStep < 4 && (
+            <button
+              onClick={handleManualCapture}
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-5 py-2 bg-primary-accent hover:bg-primary text-white text-[11px] font-bold uppercase tracking-widest rounded-full shadow-xl transition-all animate-pulse cursor-pointer whitespace-nowrap"
+            >
+              <Camera className="w-4 h-4 flex-shrink-0" />
+              {calibrationStep === 1 && "Capture Face →"}
+              {calibrationStep === 2 && "Capture Eyes →"}
+              {calibrationStep === 3 && "Capture Posture →"}
+            </button>
+          )}
         </div>
       </div>
+
     </div>
   );
 }
